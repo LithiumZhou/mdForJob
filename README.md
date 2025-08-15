@@ -8,26 +8,26 @@
 
 本仓库主要涵盖以下几个核心模块：
 
-*   **[🔷 Objective-C 基础](link/to/oc/folder)**
+*   **🔷 Objective-C 基础**
     *   内存管理 (ARC, MRC, `autoreleasepool`)
     *   `Runtime` 运行时机制
     *   多线程与并发 (`GCD`, `NSOperation`)
     *   `Block` 与循环引用
     *   `Category` vs `Extension`
     *   ...
-*   **[🌐 计算机网络](link/to/network/folder)**
+*   **🌐 计算机网络**
     *   OSI 七层模型 vs TCP/IP 四层模型
     *   HTTP 协议 (HTTP/1.1, HTTP/2, HTTPS)
     *   TCP/IP 协议族 (三次握手, 四次挥手, 拥塞控制)
     *   DNS 解析流程
     *   ...
-*   **[💻 操作系统](link/to/os/folder)**
+*   **💻 操作系统**
     *   进程与线程的区别与联系
     *   内存管理 (虚拟内存, 分页, 分段)
     *   进程调度算法
     *   死锁的产生与避免
     *   ...
-*   **[💾 数据结构与算法](link/to/ds_algo/folder)**
+*   **💾 数据结构与算法**
     *   常用数据结构 (数组, 链表, 栈, 队列, 树, 图)
     *   排序与查找算法
     *   红黑树与 B+ 树
