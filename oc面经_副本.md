@@ -1328,8 +1328,6 @@ NSString *initializedGlobalString = @"Global"; // 已初始化，存放在数据
 
 3.  **谁在调用这个方法**：调用者是**动态生成的 setter 方法**。因此，`automaticallyNotifiesObserversForKey:` 成为了这个动态 setter 内部逻辑的一个关键控制阀。
 
-
-
 ## gcd和nsthread
 
 * 一个死锁场景
@@ -1374,8 +1372,6 @@ dispatch_async(queue, ^{    // 异步执行 + 串行队列
 
 ## GCD、NSThread、NSOperation性能上有何区别
 
-## 什么情况使用weak关键字，相比assign有什么不同？
-
 ## NSNotificationCenter通知中心的实现原理
 
 ```objective-c
@@ -1392,8 +1388,6 @@ dispatch_async(queue, ^{    // 异步执行 + 串行队列
                           object:self 
                         userInfo:userInfo];
 ```
-
-
 
 **目录一：按“通知名”索引 (最常用)**
 
@@ -5296,17 +5290,7 @@ if (middleName == [NSNull null]) {
 
 ---
 
-### 总结表格
-
-| 特性             | `nil`                         | `NULL`                      | `NSNull`                                                     |
-| :--------------- | :---------------------------- | :-------------------------- | :----------------------------------------------------------- |
-| **本质**         | **对象空指针**                | **通用空指针**              | **一个单例对象**                                             |
-| **类型**         | `(id)0`                       | `(void *)0`                 | `NSNull *`                                                   |
-| **用途**         | 表示 Objective-C 对象指针为空 | 表示 C 语言指针为空         | 在集合类中作为**空值占位符**                                 |
-| **能否加入集合** | **不能** (会导致崩溃)         | **不能** (会导致崩溃)       | **可以**                                                     |
-| **能否发送消息** | **可以** (安全，无操作)       | **不可以**                  | **可以** (但它只响应 `NSObject` 的基本方法，发送其他消息会崩溃) |
-| **判断相等**     | `if (obj == nil)`             | `if (ptr == NULL)`          | `if (obj == [NSNull null])` 或 `[obj isKindOfClass:[NSNull class]]` |
-| **使用环境**     | **Objective-C**               | **C, C++, Core Foundation** | **Objective-C (Foundation 集合类)**                          |
+### `PerformSelector` 的使用和实现原理
 
 # 计网
 
