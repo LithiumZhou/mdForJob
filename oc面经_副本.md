@@ -93,6 +93,96 @@ self.count = self.count + 1;
 
 `atomic`只保证了第1步和第3步各自的原子性，但无法保证在第1步和第3步之间没有其他线程修改`self.count`。因此，这可能会导致更新丢失的问题。要实现这种复合操作的线程安全，需要使用更明确的锁机制，如`@synchronized`或GCD。
 
+## ios中有几种复制
+
+### **两大核心复制类型：`copy` vs. `mutableCopy`**
+
+这是由 `NSObject` 的一个非正式协议 `NSCopying` 和一个正式协议 `NSMutableCopying` 所定义的两种最基本的复制行为。
+
+#### **1. `copy` -> 产生不可变副本**
+
+*   **调用方法**: `[someObject copy]`
+*   **需要遵守**: `NSCopying` 协议，并实现 `- (id)copyWithZone:(NSZone *)zone;` 方法。 **重要！！！！！**
+*   **核心目的**: 无论原始对象是可变的还是不可变的，调用 `copy` 方法后，你**总是**会得到一个**不可变 (Immutable)** 的副本。
+*   **具体行为**:
+    *   **对不可变对象 (`NSString`, `NSArray`) 调用 `copy`**:
+        *   这通常不会创建一个全新的对象。出于性能优化，它会执行一次**“浅拷贝”**，但实际上更像是**指针拷贝并增加引用计数**。因为原始对象和副本都是不可变的，内容完全一样，没有必要再浪费内存去创建一个一模一样的新对象。所以，返回的只是指向原始对象的另一个指针（引用计数+1）。
+    *   **对可变对象 (`NSMutableString`, `NSMutableArray`) 调用 `copy`**:
+        *   这**会创建一个全新的、不可变的对象** (`NSString`, `NSArray`)。
+        *   新对象的内容与原始可变对象在拷贝那一刻的内容完全相同。
+        *   这是一个非常常见的用法，用于获取一个可变对象的“快照”，确保这个快照在未来不会再被意外修改。
+
+#### **2. `mutableCopy` -> 产生可变副本**
+
+*   **调用方法**: `[someObject mutableCopy]`
+*   **需要遵守**: `NSMutableCopying` 协议，并实现 `- (id)mutableCopyWithZone:(NSZone *)zone;` 方法。**重要！！！！**
+*   **核心目的**: 无论原始对象是可变的还是不可变的，调用 `mutableCopy` 方法后，你**总是**会得到一个**可变 (Mutable)** 的副本。
+*   **具体行为**:
+    *   **对不可变对象 (`NSString`, `NSArray`) 调用 `mutableCopy`**:
+        *   **会创建一个全新的、可变的对象** (`NSMutableString`, `NSMutableArray`)。
+        *   新对象的内容与原始不可变对象的内容相同。
+    *   **对可变对象 (`NSMutableString`, `NSMutableArray`) 调用 `mutableCopy`**:
+        *   **也会创建一个全新的、可变的对象** (`NSMutableString`, `NSMutableArray`)。
+        *   新对象的内容与原始可变对象的内容相同。
+
+---
+
+### **两大复制深度：浅拷贝 vs. 深拷贝**
+
+`copy` 和 `mutableCopy` 的默认行为，特别是对于**容器类**（如 `NSArray`, `NSDictionary`），是**浅拷贝**。这是一个极其重要的概念。
+
+#### **3. 浅拷贝 (Shallow Copy)**
+
+*   **定义**: **只复制容器对象本身，而不复制容器内部所引用的元素对象。**
+*   **比喻**: 你复印了一份通讯录。你得到了一本**新的通讯录本子**（新的容器对象），但这本新通讯录上记录的所有人的**电话号码**（指向元素的指针），和旧本子上是**一模一样**的。
+*   **行为**:
+    *   当你执行 `NSMutableArray *newArray = [oldArray mutableCopy];` 时：
+        *   `newArray` 是一个全新的、独立的 `NSMutableArray` 实例。你可以向 `newArray` 中添加或删除元素，而**不会影响** `oldArray`。
+        *   但是，`newArray` 和 `oldArray` 内部的元素，依然是指向**同一批原始对象**的指针。
+*   **后果**: 如果你从 `newArray` 中取出一个 `Person` 对象，并修改了它的属性（`person.name = @"New Name";`），那么当你从 `oldArray` 中取出“同一个” `Person` 对象时，会发现它的 `name` 也被改变了。因为它们本来就是同一个对象。
+
+#### **4. 深拷贝 (Deep Copy)**
+
+* **定义**: **不仅复制容器对象本身，还会递归地、逐一地复制容器内部所引用的所有元素对象。**
+
+* **比喻**: 你不仅复印了通讯录，还为通讯录上的每一个人都**克隆**了一个一模一样的“克隆人”。你的新通讯录上，记录的都是这些“克隆人”的电话号码。
+
+* **行为**:
+
+  *   执行深拷贝后，你会得到一个全新的容器，并且容器里的所有元素也都是全新的、独立的副本。
+  *   修改新容器中任何一个元素的状态，**绝对不会**影响到原始容器中的任何元素。
+
+* **如何实现**:
+
+  * Objective-C **没有一个通用的、系统级的 `deepCopy` 方法**。因为框架不知道你的自定义对象应该如何进行深拷贝。
+
+  * 你必须**自己实现**深拷贝逻辑。
+
+  * **对于容器类**: Foundation 提供了一个便利的初始化方法来实现深拷贝：
+
+    ```objc
+    // `copyItems:YES` 会遍历 `originalArray`，并对其中的每一个元素调用 `copy` 方法。
+    // 这要求数组中的所有元素都必须遵守 `NSCopying` 协议。
+    NSArray *deepCopiedArray = [[NSArray alloc] initWithArray:originalArray copyItems:YES];
+    ```
+
+    **注意**: 这依然是一个“一层”的深拷贝。如果数组元素 `Person` 内部还有一个 `Car` 对象，这个 `Car` 对象是不会被拷贝的，除非你在 `Person` 的 `copyWithZone:` 方法里自己去实现对 `Car` 的拷贝。
+
+  * **对于自定义对象**: 你需要在你自己的 `copyWithZone:` 实现中，对需要深拷贝的属性，也调用 `copy` 或 `mutableCopy`。
+
+    ```objc
+    - (id)copyWithZone:(NSZone *)zone {
+        MyObject *copy = [[MyObject allocWithZone:zone] init];
+        // 对 name 属性进行 copy，确保它是一个新的字符串实例
+        copy.name = [self.name copy]; 
+        // 对 array 属性进行深拷贝
+        copy.myArray = [[NSMutableArray alloc] initWithArray:self.myArray copyItems:YES];
+        return copy;
+    }
+    ```
+
+
+
 ## 用copy修饰符还需要做什么，如何实现深拷贝和浅拷贝
 
 * 假如是官方类，该类需要遵循`NSCopying`协议
@@ -299,8 +389,6 @@ objc_autoreleasePoolPop(pool);
 
 * 一种根据cpu架构自适应的float，CGfloat在32位cpu下就是float，在64位cpu下会变成double
 * 具体底层实现 是通过条件编译
-
-## 事件传递和响应链
 
 ## category能不能添加property
 
@@ -522,10 +610,61 @@ void RunLoop::run() {
 
 #### **1. `Input Sources` (输入源)**
 
-*   **是什么？** 就是**产生事件的东西**，是 `RunLoop` 需要监听和处理的对象。
-*   **分为两类**：
-    *   **`Source0`**: 这一类事件来自于**应用程序内部**。比如，你在一个后台线程完成了计算，想让主线程刷新 UI，你调用 `performSelectorOnMainThread:`，这个调用就会在主线程的 `RunLoop` 上创建一个 `Source0` 事件。**这种事件本身不能唤醒休眠的线程**，你需要先手动唤醒 `RunLoop`，然后它在检查时才会处理 `Source0`。
-    *   **`Source1`**: 这一类事件来自于**操作系统内核**，通常和硬件或进程间通信有关。比如，网络数据的到达、用户触摸屏幕等。**这种事件可以直接将处于休眠状态的线程唤醒**。
+* **是什么？** 就是**产生事件的东西**，是 `RunLoop` 需要监听和处理的对象。
+
+  在 **Apple RunLoop** 中，**Source** 代表输入源（Input Source），用于处理事件。它分为两类：
+
+  - **Source0**：非基于端口的输入源（手动唤醒）
+  - **Source1**：基于端口的输入源（内核可唤醒）
+
+  ------
+
+  ## ✅ **Source0**
+
+  ### **特点**
+
+  - **非端口驱动**，不依赖内核，完全在用户态。
+  - 不会主动唤醒 RunLoop，**必须手动唤醒**（`CFRunLoopWakeUp()`）。
+  - 用于处理**自定义事件**，比如：
+    - `performSelector:onThread:`
+    - 手动触发的任务（如 GCD 的 `dispatch_async` 到主线程）
+
+  ------
+
+  ## ✅ **Source1**
+
+  ### **特点**
+
+  - **基于端口（Port-based）**，底层是 **Mach port**。
+  - 内核事件可以直接唤醒 RunLoop（系统自动）。
+  - 用于处理**系统事件、跨线程通信、进程通信**。
+
+  ### **典型场景**
+
+  - **系统级事件**
+    - 触摸、键盘、屏幕刷新，最终通过 Mach port 发送到 RunLoop。
+  - **CFMachPort**
+    - 用于和内核或其他进程通信。
+  - **GCD 主队列任务**
+    - 底层通过 Mach port 将 block 投递到主线程。
+
+  ------
+
+  ## ✅ **二者区别总结**
+
+  | 特性         | Source0                       | Source1                            |
+  | ------------ | ----------------------------- | ---------------------------------- |
+  | **基于端口** | 否                            | 是（Mach port）                    |
+  | **唤醒机制** | 手动唤醒（`CFRunLoopWakeUp`） | 内核事件自动唤醒                   |
+  | **事件来源** | 自定义任务、`performSelector` | 系统事件、GCD、IPC                 |
+  | **常见用途** | 线程间通信、自定义输入源      | 系统输入源（触摸、定时器、信号等） |
+
+  ------
+
+  ✅ **RunLoop 处理 Source 的顺序**
+
+  1. 先处理 **Source0**（非端口事件）
+  2. 再处理 **Source1**（端口事件）
 
 #### **2. `Timers` (定时器)**
 
@@ -681,14 +820,13 @@ Cocoa Touch 框架为我们预定义了几种常见的 `Mode`：
 当你需要在子线程里做以下这些**需要“持续等待”**的事情时，你就必须手动获取并启动它的 `RunLoop`：
 
 1.  **使用 `NSTimer`**：
+    
     *   `NSTimer` 的触发，依赖于被添加到 `RunLoop` 中。如果你在一个子线程里创建了一个 `Timer`，但不启动这个线程的 `RunLoop`，那么这个 `Timer` **永远不会被触发**。
-
+    
 2.  **使用 `performSelector...afterDelay:`**：
+    
     *   这个方法的延迟执行，也是通过 `RunLoop` 的 `Timer` 机制来实现的。没有 `RunLoop`，它就不会执行。
-
-3.  **使用 `NSPort` 进行线程间通信**：
-    *   `NSPort` 是一个 `Source1` 事件源，它的监听和触发，也必须依赖 `RunLoop`。
-
+    
 4.  **保持线程存活**：
     *   有时候，你可能希望创建一个**常驻线程 (Resident Thread)**，让它一直存在，随时准备接收任务，而不是每次有任务都去创建一个新线程（以节省创建线程的开销）。
     *   要实现这一点，唯一的办法就是获取这个线程的 `RunLoop`，并让它**进入一个永不退出的循环**，比如：
@@ -748,9 +886,69 @@ Cocoa Touch 框架为我们预定义了几种常见的 `Mode`：
 
    
 
-## runtime
+## 怎么给子线程保活
 
----
+在 iOS 或 macOS 上，如果你想**让子线程保活**，通常用的是 **RunLoop**，因为普通子线程在任务执行完后会直接退出。
+
+------
+
+### ✅ **为什么子线程会退出？**
+
+- 子线程默认没有 RunLoop。
+- 如果线程任务执行完，没有继续的事情要做，它就会直接结束。
+
+------
+
+### ✅ **保活的核心思路**
+
+- 为子线程开启一个 **RunLoop**，让它一直处于运行状态，不退出。
+- 不过 RunLoop 没有事件会自动退出，所以需要 **添加一个事件源（Source）或 Timer** 来让它保持运行。
+
+------
+
+### ✅ **常用实现方式**
+
+#### **方法 1：添加一个 `Port` 保活**
+
+```objc
+NSThread *thread = [[NSThread alloc] initWithBlock:^{
+    NSLog(@"子线程开始运行");
+    [[NSRunLoop currentRunLoop] addPort:[NSMachPort port] forMode:NSDefaultRunLoopMode];
+    [[NSRunLoop currentRunLoop] run]; // 启动 RunLoop
+    NSLog(@"子线程结束"); // 理论上不会走到这里，除非手动停止 RunLoop
+}];
+[thread start];
+```
+
+- `addPort:` 是给 RunLoop 添加一个输入源（Source1），否则 `run` 会立即退出。
+
+------
+
+#### **方法 2：添加一个虚拟的 Timer**
+
+```objc
+NSThread *thread = [[NSThread alloc] initWithBlock:^{
+    NSLog(@"子线程开始运行");
+    NSTimer *timer = [NSTimer timerWithTimeInterval:10 target:self selector:@selector(dummy) userInfo:nil repeats:YES];
+    [[NSRunLoop currentRunLoop] addTimer:timer forMode:NSDefaultRunLoopMode];
+    [[NSRunLoop currentRunLoop] run];
+}];
+[thread start];
+```
+
+- Timer 会定期触发事件，保证 RunLoop 活着。
+
+
+
+------
+
+### ✅ **注意点**
+
+1. **RunLoop 不会无缘无故保持运行**，必须有事件源（Port、Timer、Source）。
+2. **GCD** 线程池里的线程不能这么保活，因为它们是系统管理的。
+3. 子线程保活后，要注意避免内存泄漏或死循环，确保退出机制。
+
+## runtime
 
 ### 面试官：“同学，讲一下你对 Runtime 的理解吧”
 
@@ -1130,8 +1328,6 @@ NSString *initializedGlobalString = @"Global"; // 已初始化，存放在数据
 
 3.  **谁在调用这个方法**：调用者是**动态生成的 setter 方法**。因此，`automaticallyNotifiesObserversForKey:` 成为了这个动态 setter 内部逻辑的一个关键控制阀。
 
-
-
 ## gcd和nsthread
 
 * 一个死锁场景
@@ -1176,8 +1372,6 @@ dispatch_async(queue, ^{    // 异步执行 + 串行队列
 
 ## GCD、NSThread、NSOperation性能上有何区别
 
-## 什么情况使用weak关键字，相比assign有什么不同？
-
 ## NSNotificationCenter通知中心的实现原理
 
 ```objective-c
@@ -1194,8 +1388,6 @@ dispatch_async(queue, ^{    // 异步执行 + 串行队列
                           object:self 
                         userInfo:userInfo];
 ```
-
-
 
 **目录一：按“通知名”索引 (最常用)**
 
@@ -4311,89 +4503,6 @@ iOS 中的 Crash 大致可以分为两大类：**Mach 异常（底层内核级�
     *   **对于图片缓存**: “像用户头像这种会反复加载的，就很适合 LRU/LFU。但对于新闻客户端里只看一次的列表图片，可能用一个更简单的 **FIFO（先进先出）**或者基于**缓存大小（Cost）**和**存活时间（TTL）**的策略就足够了。”
     *   **对于 API 数据缓存**: “可能更看重数据的**时效性**，所以基于 TTL（Time-To-Live）的过期策略会和 LRU/LFU 结合使用。一个数据即使再热门，只要超过了指定的缓存时间，也必须被淘汰或重新验证。”
 
-## ios中有几种复制
-
-好的，在 iOS (Objective-C) 开发中，对象的“复制”（Copy）是一个非常核心的概念，它与内存管理和数据不可变性紧密相关。
-
-总的来说，iOS 中的复制可以分为两大类，每类又可以根据其行为深度进一步细分。
-
----
-
-### **两大核心复制类型：`copy` vs. `mutableCopy`**
-
-这是由 `NSObject` 的一个非正式协议 `NSCopying` 和一个正式协议 `NSMutableCopying` 所定义的两种最基本的复制行为。
-
-#### **1. `copy` -> 产生不可变副本**
-
-*   **调用方法**: `[someObject copy]`
-*   **需要遵守**: `NSCopying` 协议，并实现 `- (id)copyWithZone:(NSZone *)zone;` 方法。 **重要！！！！！**
-*   **核心目的**: 无论原始对象是可变的还是不可变的，调用 `copy` 方法后，你**总是**会得到一个**不可变 (Immutable)** 的副本。
-*   **具体行为**:
-    *   **对不可变对象 (`NSString`, `NSArray`) 调用 `copy`**:
-        *   这通常不会创建一个全新的对象。出于性能优化，它会执行一次**“浅拷贝”**，但实际上更像是**指针拷贝并增加引用计数**。因为原始对象和副本都是不可变的，内容完全一样，没有必要再浪费内存去创建一个一模一样的新对象。所以，返回的只是指向原始对象的另一个指针（引用计数+1）。
-    *   **对可变对象 (`NSMutableString`, `NSMutableArray`) 调用 `copy`**:
-        *   这**会创建一个全新的、不可变的对象** (`NSString`, `NSArray`)。
-        *   新对象的内容与原始可变对象在拷贝那一刻的内容完全相同。
-        *   这是一个非常常见的用法，用于获取一个可变对象的“快照”，确保这个快照在未来不会再被意外修改。
-
-#### **2. `mutableCopy` -> 产生可变副本**
-
-*   **调用方法**: `[someObject mutableCopy]`
-*   **需要遵守**: `NSMutableCopying` 协议，并实现 `- (id)mutableCopyWithZone:(NSZone *)zone;` 方法。**重要！！！！**
-*   **核心目的**: 无论原始对象是可变的还是不可变的，调用 `mutableCopy` 方法后，你**总是**会得到一个**可变 (Mutable)** 的副本。
-*   **具体行为**:
-    *   **对不可变对象 (`NSString`, `NSArray`) 调用 `mutableCopy`**:
-        *   **会创建一个全新的、可变的对象** (`NSMutableString`, `NSMutableArray`)。
-        *   新对象的内容与原始不可变对象的内容相同。
-    *   **对可变对象 (`NSMutableString`, `NSMutableArray`) 调用 `mutableCopy`**:
-        *   **也会创建一个全新的、可变的对象** (`NSMutableString`, `NSMutableArray`)。
-        *   新对象的内容与原始可变对象的内容相同。
-
----
-
-### **两大复制深度：浅拷贝 vs. 深拷贝**
-
-`copy` 和 `mutableCopy` 的默认行为，特别是对于**容器类**（如 `NSArray`, `NSDictionary`），是**浅拷贝**。这是一个极其重要的概念。
-
-#### **3. 浅拷贝 (Shallow Copy)**
-
-*   **定义**: **只复制容器对象本身，而不复制容器内部所引用的元素对象。**
-*   **比喻**: 你复印了一份通讯录。你得到了一本**新的通讯录本子**（新的容器对象），但这本新通讯录上记录的所有人的**电话号码**（指向元素的指针），和旧本子上是**一模一样**的。
-*   **行为**:
-    *   当你执行 `NSMutableArray *newArray = [oldArray mutableCopy];` 时：
-        *   `newArray` 是一个全新的、独立的 `NSMutableArray` 实例。你可以向 `newArray` 中添加或删除元素，而**不会影响** `oldArray`。
-        *   但是，`newArray` 和 `oldArray` 内部的元素，依然是指向**同一批原始对象**的指针。
-*   **后果**: 如果你从 `newArray` 中取出一个 `Person` 对象，并修改了它的属性（`person.name = @"New Name";`），那么当你从 `oldArray` 中取出“同一个” `Person` 对象时，会发现它的 `name` 也被改变了。因为它们本来就是同一个对象。
-
-#### **4. 深拷贝 (Deep Copy)**
-
-*   **定义**: **不仅复制容器对象本身，还会递归地、逐一地复制容器内部所引用的所有元素对象。**
-*   **比喻**: 你不仅复印了通讯录，还为通讯录上的每一个人都**克隆**了一个一模一样的“克隆人”。你的新通讯录上，记录的都是这些“克隆人”的电话号码。
-*   **行为**:
-    *   执行深拷贝后，你会得到一个全新的容器，并且容器里的所有元素也都是全新的、独立的副本。
-    *   修改新容器中任何一个元素的状态，**绝对不会**影响到原始容器中的任何元素。
-*   **如何实现**:
-    *   Objective-C **没有一个通用的、系统级的 `deepCopy` 方法**。因为框架不知道你的自定义对象应该如何进行深拷贝。
-    *   你必须**自己实现**深拷贝逻辑。
-    *   **对于容器类**: Foundation 提供了一个便利的初始化方法来实现深拷贝：
-        ```objc
-        // `copyItems:YES` 会遍历 `originalArray`，并对其中的每一个元素调用 `copy` 方法。
-        // 这要求数组中的所有元素都必须遵守 `NSCopying` 协议。
-        NSArray *deepCopiedArray = [[NSArray alloc] initWithArray:originalArray copyItems:YES];
-        ```
-        **注意**: 这依然是一个“一层”的深拷贝。如果数组元素 `Person` 内部还有一个 `Car` 对象，这个 `Car` 对象是不会被拷贝的，除非你在 `Person` 的 `copyWithZone:` 方法里自己去实现对 `Car` 的拷贝。
-    *   **对于自定义对象**: 你需要在你自己的 `copyWithZone:` 实现中，对需要深拷贝的属性，也调用 `copy` 或 `mutableCopy`。
-        ```objc
-        - (id)copyWithZone:(NSZone *)zone {
-            MyObject *copy = [[MyObject allocWithZone:zone] init];
-            // 对 name 属性进行 copy，确保它是一个新的字符串实例
-            copy.name = [self.name copy]; 
-            // 对 array 属性进行深拷贝
-            copy.myArray = [[NSMutableArray alloc] initWithArray:self.myArray copyItems:YES];
-            return copy;
-        }
-        ```
-
 ## Masonry有什么亮点
 
 好的，`Masonry` 是 iOS 和 macOS 开发中一个极其流行且经典的第三方**自动布局（Auto Layout）框架**。它的出现，极大地改变了开发者用代码编写自动布局的方式。
@@ -5181,17 +5290,7 @@ if (middleName == [NSNull null]) {
 
 ---
 
-### 总结表格
-
-| 特性             | `nil`                         | `NULL`                      | `NSNull`                                                     |
-| :--------------- | :---------------------------- | :-------------------------- | :----------------------------------------------------------- |
-| **本质**         | **对象空指针**                | **通用空指针**              | **一个单例对象**                                             |
-| **类型**         | `(id)0`                       | `(void *)0`                 | `NSNull *`                                                   |
-| **用途**         | 表示 Objective-C 对象指针为空 | 表示 C 语言指针为空         | 在集合类中作为**空值占位符**                                 |
-| **能否加入集合** | **不能** (会导致崩溃)         | **不能** (会导致崩溃)       | **可以**                                                     |
-| **能否发送消息** | **可以** (安全，无操作)       | **不可以**                  | **可以** (但它只响应 `NSObject` 的基本方法，发送其他消息会崩溃) |
-| **判断相等**     | `if (obj == nil)`             | `if (ptr == NULL)`          | `if (obj == [NSNull null])` 或 `[obj isKindOfClass:[NSNull class]]` |
-| **使用环境**     | **Objective-C**               | **C, C++, Core Foundation** | **Objective-C (Foundation 集合类)**                          |
+### `PerformSelector` 的使用和实现原理
 
 # 计网
 
