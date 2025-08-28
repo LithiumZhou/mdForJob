@@ -1617,6 +1617,7 @@ Method Swizzling 的本质就是：
     *   当网络请求**失败**时（比如网络中断、服务器错误），`data` 将会是 `nil`。
     *   当请求成功，但服务器返回的响应体就是**空**的时候，`data` 的长度可能是 0，但它本身不是 `nil`。
 *   **如何使用？**:
+    
     *   对于 **JSON**: 你需要使用 `NSJSONSerialization` 将 `NSData` 解析成 `NSDictionary` 或 `NSArray`。
         ```objc
         NSError *jsonError;
@@ -1714,7 +1715,7 @@ NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithURL:url
 
 类似java的arraylist，动态数组底层，满了就扩容两倍--》创建一个新的两倍容量的数组 把内容拷贝过去
 
-## block和delegate及如何使用
+## block和delegate如何使用
 
 ## 循环引用
 
@@ -2157,10 +2158,6 @@ objc_msgSend(receiver, selector, arg1, arg2, ...);
     *   这个缓存表以 `SEL` 作为 `key`，以方法的具体实现地址（`IMP`）作为 `value`。`IMP` 本质上就是一个函数指针，指向实现了该方法逻辑的C函数。
     *   查找过程非常快，通常只需要几次内存读取和比较。
 
-*   **查找结果：**
-    *   **命中（Cache Hit）**: 这是最理想的情况。如果缓存中找到了 `selector` 对应的 `IMP`，`objc_msgSend` 会立即获得这个函数指针，然后直接跳转（`GOTO`）到该地址去执行代码，并将 `receiver` 和其他参数传递过去。流程到此结束，这是消息发送的最快路径。
-    *   **未命中（Cache Miss）**: 如果缓存中没有找到，说明这是该方法第一次被调用，或者缓存已被清空。此时，进入下一步“慢速路径”。
-
 #### 第4步：慢速路径 - 遍历方法列表（The Slow Path: Method List Search）
 
 如果在缓存中找不到，系统就必须去类的“花名册”里按名字查找了。
@@ -2192,8 +2189,6 @@ objc_msgSend(receiver, selector, arg1, arg2, ...);
 *   **抵达根类仍未找到**: 如果一直找到了根类 (`NSObject`)，并且把根类的方法列表都查完了，还是没有找到对应的 `selector`。
 
     **至此，消息发送的流程宣告失败。**
-
-
 
 ## oc的消息转发机制
 
@@ -2312,8 +2307,6 @@ objc_msgSend(receiver, selector, arg1, arg2, ...);
     }
     ```
 *   **结果**：这是最灵活、最强大的一个阶段。`NSInvocation` 就像一个**完整的消息对象**，你可以读取它的所有信息（target, selector, arguments），也可以修改它们，甚至可以把它转发给多个不同的对象。**无论你在这里做什么，只要你不调用 `[super forwardInvocation:anInvocation]`，程序就不会崩溃。整个消息转发流程到此彻底结束。**
-
-## 离屏渲染是什么，怎么避免？
 
 ## viewcontroller的生命周期
 
@@ -4105,6 +4098,8 @@ Render Server收到了你App发来的“图层树”和所有改动信息。现�
 
 这个过程在GPU上是并行处理的，速度极快。
 
+渲染服务器进程接收到数据后，接力棒就交给了 GPU。
+
 ### 第五步：显示在屏幕上 (Display)
 
 1.  **帧缓冲区 (Framebuffer)**：GPU将合成好的最终图片，放入一块名为**帧缓冲区**的特殊内存区域。这块内存里的数据，直接对应着屏幕上即将显示的每一个像素的颜色。
@@ -4118,6 +4113,175 @@ Render Server收到了你App发来的“图层树”和所有改动信息。现�
     *   收到信号后，系统会**瞬间交换**前后台缓冲区的指针。后台缓冲区变成新的前台缓冲区，开始显示在屏幕上；而旧的前台缓冲区则变成后台缓冲区，等待GPU绘制下一帧。
 
 至此，从`UIView`的属性修改，到最终像素显示在屏幕上的完整旅程就结束了。
+
+## 离屏渲染是什么，怎么避免？
+
+好的，这是一个在 iOS 开发中非常重要且经常在面试中被问到的性能优化问题。
+
+我将用一个生动的比喻来开始，然后深入技术细节，最后提供具体的避免策略。
+
+---
+
+### 一、离屏渲染是什么？（一个“厨师做菜”的比喻）
+
+**技术定义**：
+离屏渲染（Off-Screen Rendering）指的是 GPU 在当前屏幕缓冲区之外，预先开辟一个新的缓冲区，对部分图层进行渲染，并将渲染结果保存起来。当需要时，再将这个已经渲染好的结果拷贝到屏幕缓冲区上，最终显示出来。
+
+---
+
+### 二、为什么会触发离屏渲染？
+
+离屏渲染的本质原因是：**有些视觉效果无法通过一次渲染通道（one-pass rendering）就完成，需要依赖于图层之前的渲染结果。**
+
+最常见的触发条件有以下几种：
+
+1.  **圆角（`cornerRadius`）与 `masksToBounds` 同时使用**：
+    *   **原因**：这是最普遍的场景。当只设置 `cornerRadius` 时，只是影响了背景色和边框，内容（比如子视图 `UIImageView`）还是方的。当同时设置 `masksToBounds = YES` 时，系统必须先将该图层及其所有子图层渲染到一个离屏缓冲区，然后根据 `cornerRadius` 对这个缓冲区进行裁剪，最后再将裁剪后的结果贴回到屏幕上。
+    *   **例外**：如果一个图层仅仅是 `UIImageView`，并且只设置了它的 `image`，同时使用圆角和裁剪，iOS 系统有特殊的优化，**可能不会**触发离屏渲染。但只要上面有其他子视图，就一定会触发。
+
+---
+
+### 三、离屏渲染为什么会影响性能？
+
+它主要的开销在于：
+
+1.  **创建离屏缓冲区**：需要在内存中额外分配一块空间来存储中间渲染结果，增加了内存开销。
+2.  **上下文切换（Context Switch）**：这是**最大的性能杀手**。渲染过程需要从当前的屏幕缓冲区（On-Screen）切换到离屏缓冲区（Off-Screen），完成渲染后，再切换回屏幕缓冲区，把结果拷贝回去。GPU 的上下文切换非常耗时。
+3.  **GPU 额外工作负载**：整个渲染管线需要至少执行两次，一次离屏，一次上屏，增加了 GPU 的工作量。
+
+这些开销在单个视图上可能不明显，但如果在 `UITableView` 或 `UICollectionView` 的大量 cell 中频繁触发，就会导致滑动时帧率下降，出现**卡顿**。
+
+---
+
+### 四、如何检测和避免离屏渲染？
+
+#### 检测工具
+
+1.  **Simulator (模拟器)**:
+    *   在菜单栏选择 `Debug` -> `Color Off-screen Rendered`。
+    *   开启后，所有触发了离屏渲染的区域都会被高亮成**黄色**。这是最直观、最快捷的检测方法。
+
+2.  **Instruments**:
+    *   使用 `Core Animation` 工具，勾选 `Color Off-screen Rendered Yellow` 选项，可以在真机上进行检测。
+
+#### 避免策略（对症下药）
+
+常规做法，也就是**会触发离屏渲染**的写法是这样的：
+```objc
+// 在 MyTableViewCell.m 中
+- (void)awakeFromNib {
+    [super awakeFromNib];
+    
+    // 这种写法简单直接，但性能开销大
+    self.layer.cornerRadius = 10.0;
+    self.layer.masksToBounds = YES; // 或者 self.clipsToBounds = YES;
+}
+```
+当 `masksToBounds` (或 `clipsToBounds`) 被设置为 `YES` 时，Core Animation 必须创建一个离屏缓冲区，将该 `layer` 及其所有子 `layer` 的内容都绘制进去，然后再进行裁剪，最后将结果拷贝回屏幕。
+
+---
+
+### 方案一：使用带圆角的背景图 (UI/资源层面解决)
+
+这是**最简单、最高效**的方案，因为它从根本上避免了运行时的裁剪计算。
+
+*   **核心思想**：让视图的“圆角”效果仅仅是一种视觉呈现，而不是通过实时计算裁剪得到的。
+
+*   **具体实现**：
+    1.  **让 UI 设计师直接提供**一张中间内容透明、四个角是背景色的 PNG 图片。
+    2.  在你的 Cell 中，将这张图片作为背景 `UIImageView`，并置于所有其他内容的**最下层**。
+    3.  你的内容视图（比如 `contentView`）的 `backgroundColor` 应该设置为 `clearColor`。
+    4.  **不需要**设置 `cornerRadius` 和 `masksToBounds`。
+
+*   **示例代码**：
+    ```objc
+    // 在 MyTableViewCell.m 中
+    - (void)awakeFromNib {
+        [super awakeFromNib];
+        
+        // 假设 self.backgroundImageView 是 XIB 中拖好的
+        // 或者代码创建并添加到最底层
+        self.backgroundImageView.image = [UIImage imageNamed:@"rounded_corner_background"];
+        
+        // 确保内容视图是透明的，这样才能透出下面的圆角背景
+        self.contentView.backgroundColor = [UIColor clearColor];
+    }
+    ```
+
+*   **优点**：
+    *   性能极高，零运行时开销。
+    *   实现简单。
+*   **缺点**：
+    *   依赖 UI 资源，不够灵活。如果圆角大小、背景色需要动态改变，这个方案就不适用了。
+    *   如果 Cell 的内容（比如一个 `UIImageView`）需要被裁剪，这个方案也无法解决。
+
+---
+
+### 方案二：遮罩法 (视觉欺骗)
+
+如果你的 Cell 背景是纯色（比如白色），这个方案非常巧妙且高效。
+
+*   **核心思想**：不裁剪内容，而是在内容的**上层**盖住四个角，模拟出圆角的效果。
+
+*   **具体实现**：
+    1.  在 Cell 的四个角上，分别添加四个小的 `UIView`。
+    2.  这四个 `UIView` 的背景色**必须和 Cell 的父视图背景色完全相同**（比如 `tableView` 的背景色）。
+    3.  通过 Auto Layout 或计算 Frame 将它们精确定位在四个角。
+    4.  **不需要**设置 `cornerRadius` 和 `masksToBounds`。
+
+*   **优点**：
+    *   性能很高，只增加了四个简单的 `UIView` 渲染开销。
+    *   非常灵活，可以动态改变。
+*   **缺点**：
+    *   只适用于**纯色背景**的场景。如果背景是渐变色或图片，这个方法就行不通了。
+
+---
+
+### 方案三：使用 `CAShapeLayer` 作为蒙版 (Mask)
+
+这是**最通用、最推荐**的纯代码解决方案。它利用了 `CAShapeLayer` 的一个特性：GPU 可以非常高效地利用 `CAShapeLayer` 的路径来进行渲染和裁剪，这个过程通常被高度优化，不会触发离屏渲染。
+
+*   **核心思想**：用一个“形状图层” (`CAShapeLayer`) 来告诉渲染引擎最终的视图应该是什么形状，而不是让渲染引擎自己去计算裁剪。
+
+*   **具体实现**：
+    1.  创建一个 `UIBezierPath` 来定义你想要的圆角矩形路径。
+    2.  用这个路径创建一个 `CAShapeLayer`。
+    3.  将这个 `CAShapeLayer` 设置为你的视图 `layer` 的 `mask`。
+
+*   **示例代码**：
+    ```objc
+    // 在 MyTableViewCell.m 或自定义 UIView 中
+    // 这个方法应该在视图 bounds 确定后调用，比如 layoutSubviews
+    - (void)layoutSubviews {
+        [super layoutSubviews];
+        
+        // 如果 mask 已经存在，并且大小没变，就无需重复创建
+        if (self.layer.mask && CGRectEqualToRect(self.layer.mask.frame, self.bounds)) {
+            return;
+        }
+    
+        // 1. 创建圆角路径
+        UIBezierPath *maskPath = [UIBezierPath bezierPathWithRoundedRect:self.bounds
+                                                       byRoundingCorners:UIRectCornerAllCorners // 可以指定任意角
+                                                             cornerRadii:CGSizeMake(10.0, 10.0)];
+        
+        // 2. 创建 CAShapeLayer
+        CAShapeLayer *maskLayer = [[CAShapeLayer alloc] init];
+        maskLayer.frame = self.bounds;
+        maskLayer.path = maskPath.CGPath;
+        
+        // 3. 设置为视图的 mask
+        self.layer.mask = maskLayer;
+    }
+    ```
+
+*   **优点**：
+    *   性能远高于 `cornerRadius` + `masksToBounds`。
+    *   极其灵活，可以创建任意复杂的形状（圆形、五角星等），并且可以动态改变。
+    *   适用所有场景（纯色、渐变、图片背景等）。
+*   **缺点**：
+    *   代码量比 `cornerRadius` 稍多。
+    *   需要注意在 `layoutSubviews` 中处理，确保 `bounds` 是正确的，并避免不必要的重复创建。
 
 ## ***app从点击屏幕到完成渲染的过程（相当于手势识别+事件传递+响应链）
 
@@ -4733,9 +4897,246 @@ NSLog(@"Frame after layout: %@", NSStringFromCGRect(myView.frame)); // -> {{93.7
 
 ## 如何使线程保活
 
-
-
 ## TableView优化，怎么减少卡顿
+
+好的，我们继续深入。掌握了 Cell 的正确复用后，下一个对性能影响最大的因素，就是 **Cell 高度的计算**。
+
+---
+
+### 方案二：高效计算并缓存 Cell 高度
+
+`UITableView` 在显示内容前，需要知道每个 Cell 的确切高度，以便计算出自己的 `contentSize`、滚动条的位置等信息。如果高度计算过于耗时，就会在滑动时严重拖慢主线程，导致卡顿。
+
+#### 1. 问题的根源：`heightForRowAtIndexPath` 的调用时机
+
+你可能会认为 `-tableView:heightForRowAtIndexPath:` 这个代理方法只会在 Cell 即将出现时才被调用。但事实并非如此：
+
+*   **加载时**：`UITableView` 在第一次加载时，会调用**所有可见 Cell**的 `heightForRowAtIndexPath:`。
+*   **滑动时**：每次滑动，它不仅会为**新出现的 Cell** 调用此方法，还可能为了计算滚动条的比例而调用**大量甚至全部** Cell 的 `heightForRowahoawIndexPath:`。
+
+如果你的高度计算逻辑很复杂（比如基于文本内容动态计算），并且每次都实时计算，那么当列表数据量很大时，性能开销将是巨大的。
+
+#### 2. 优化策略：计算与缓存分离
+
+核心思想是：**不要在 `heightForRowAtIndexPath:` 中进行任何实时计算**。这个方法应该像一个高速的查询接口，只负责从一个已经准备好的地方**读取**高度值。真正的计算应该提前完成，并且结果要被**缓存**起来。
+
+**第一步：将高度计算逻辑移到数据模型（Model）中**
+
+让数据模型自己负责计算其对应内容所需的高度。这样，高度就和数据绑定在了一起，逻辑更清晰。
+
+**`MyDataModel.m`**
+```objc
+// Objective-C
+#import <UIKit/UIKit.h>
+
+@implementation MyDataModel
+
+- (CGFloat)cellHeight {
+    // _cellHeight 是在 .h 中声明的属性，用于缓存
+    // 如果已经计算过，直接返回缓存值
+    if (_cellHeight > 0) {
+        return _cellHeight;
+    }
+    
+    // --- 在这里执行复杂的计算逻辑 ---
+    CGFloat height = 0;
+    
+    // 假设有标题、内容和图片
+    height += 10; // 顶部间距
+    
+    // 计算标题高度
+    height += [self.title boundingRectWithSize:CGSizeMake(CELL_CONTENT_WIDTH, CGFLOAT_MAX) 
+                                      options:NSStringDrawingUsesLineFragmentOrigin 
+                                   attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:17]} 
+                                      context:nil].size.height;
+    
+    height += 8; // 标题和内容间距
+    
+    // 计算内容高度
+    height += [self.content boundingRectWithSize:CGSizeMake(CELL_CONTENT_WIDTH, CGFLOAT_MAX) 
+                                        options:NSStringDrawingUsesLineFragmentOrigin 
+                                     attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:14]} 
+                                        context:nil].size.height;
+    
+    if (self.image) {
+        height += 8; // 内容和图片间距
+        height += 150; // 图片固定高度
+    }
+    
+    height += 10; // 底部间距
+    
+    // 将计算结果缓存起来
+    _cellHeight = height;
+    
+    return _cellHeight;
+}
+```
+**注意**: `CELL_CONTENT_WIDTH` 是指 Cell 内容区域的宽度，你需要根据实际布局来确定。
+
+**第二步：在获取数据时提前计算并缓存**
+
+在网络请求返回、数据解析完成后，立即遍历所有数据模型，触发一次高度计算。
+
+```objc
+// Objective-C
+- (void)processFetchedData:(NSArray *)newData {
+    NSMutableArray *processedData = [NSMutableArray array];
+    for (NSDictionary *dataDict in newData) {
+        MyDataModel *model = [[MyDataModel alloc] initWithDictionary:dataDict];
+        // 关键一步：在添加到数据源之前，就计算并缓存好高度
+        [model cellHeight]; 
+        [processedData addObject:model];
+    }
+    
+    self.dataSource = processedData;
+    [self.tableView reloadData];
+}
+```
+这个过程可以在后台线程完成，避免阻塞主线程。
+
+**第三步：`heightForRowAtIndexPath` 只负责读取**
+
+现在，这个代理方法变得极其轻量和高效。
+
+```objc
+// Objective-C
+- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
+    MyDataModel *model = self.dataSource[indexPath.row];
+    // 直接从模型中读取已缓存的高度
+    return model.cellHeight;
+}
+```
+
+好的，前两个方案解决了 Cell 的生命周期管理和高度计算效率，接下来我们关注 Cell 内容的绘制，特别是图片这类耗时资源的处理。
+
+---
+
+### 方案三：异步图片加载与预加载 / 异步绘制 (Offloading Work from Main Thread)
+
+在 `UITableViewCell` 中显示图片，尤其是从网络加载的图片，是导致卡顿的常见原因。
+
+#### 1. 问题的根源：主线程阻塞
+
+当你在 `cellForRowAtIndexPath` 中同步地（在主线程）执行以下任何操作，都可能导致卡顿：
+
+*   **加载网络图片**：发出网络请求，等待图片下载完成。
+*   **处理大尺寸本地图片**：将磁盘上的大图加载到内存，进行解码。
+*   **对图片进行操作**：裁剪、缩放、添加滤镜、合成等。
+*   **大量文字排版计算**：虽然大部分文字渲染由系统优化，但极端复杂的自定义排版仍可能耗时。
+
+这些操作通常耗时较长，如果发生在主线程，就会阻塞 UI 渲染，导致掉帧。
+
+#### 2. 优化策略：将耗时操作移出主线程
+
+核心思想是：**任何可能耗时的操作都应该放到后台线程执行**，而主线程只负责更新 UI。
+
+**第一步：异步加载网络图片 (推荐使用第三方库)**
+
+这是最常见也最简单有效的优化。不要自己手动写 `NSURLSession` 去下载图片，而是使用成熟的第三方库。
+
+*   **例如：SDWebImage (或其他类似库如 Kingfisher, Nuke)**
+    这些库自带了图片缓存（内存缓存和磁盘缓存）、异步下载、占位图、取消旧请求、渐进式加载等一系列高级功能。
+
+    ```objc
+    // Objective-C
+    #import <SDWebImage/UIImageView+WebCache.h>
+    
+    - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+        MyTableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"MyCellIdentifier" forIndexPath:indexPath];
+        
+        MyDataModel *data = self.dataSource[indexPath.row];
+        
+        // 关键：使用 SDWebImage 异步加载图片
+        // 会自动处理占位图、缓存、下载、取消旧请求等
+        [cell.customImageView sd_setImageWithURL:[NSURL URLWithString:data.imageUrl] 
+                                placeholderImage:[UIImage imageNamed:@"placeholder"]];
+        
+        return cell;
+    }
+    ```
+    *   **原理**：这些库在后台线程进行图片下载和解码，下载完成后在主线程更新 `UIImageView`。
+
+好的，我们已经讨论了 Cell 的生命周期、高度计算和内容加载。现在，我们来关注一个更深层次的性能问题：**图层混合与离屏渲染**。
+
+---
+
+### 方案四：减少图层混合与避免离屏渲染
+
+即使 Cell 的内容和高度都已优化，不恰当的视觉效果设置仍然可能给 GPU 带来沉重负担，导致性能下降。
+
+#### 1. 问题的根源：GPU 的额外工作
+
+**A. 图层混合 (Blending)**
+
+*   **是什么？** 当多个半透明（alpha < 1.0）的图层叠加在一起时，GPU 需要计算它们混合后的最终颜色。这个计算过程不是简单的颜色覆盖，而是需要读取目标像素颜色，再结合源像素颜色和透明度，通过公式计算出新颜色。
+*   **为什么耗性能？** 这个“读-改-写”的过程比简单地用新颜色覆盖旧颜色（不透明图层）要消耗更多的 GPU 处理能力。如果在一个 `UITableView` 中，每个 Cell 都有多层半透明视图叠加，滑动时 GPU 的负担会非常重。
+
+**B. 离屏渲染 (Off-Screen Rendering)**
+
+*   我们在之前的讨论中已经详细解释过。它会**创建额外的缓冲区**并导致**昂贵的上下文切换**。在 `UITableView` 中，最常见的触发源就是**圆角裁剪**和**阴影**。
+
+#### 2. 优化策略：让 GPU “减负”
+
+核心思想是：**尽量让视图不透明，并避免使用需要多趟渲染才能实现的视觉效果。**
+
+#### **如何检测？**
+
+*   **图层混合**：在模拟器 `Debug` 菜单中，选择 `Color Blended Layers`。所有发生混合的区域都会被高亮成**红色**。不透明的区域是绿色。你的目标是**尽可能减少红色区域**。
+*   **离屏渲染**：同样在 `Debug` 菜单中，选择 `Color Off-screen Rendered`。触发离屏渲染的区域会高亮成**黄色**。你的目标是**消除不必要的黄色区域**。
+
+#### **如何优化？**
+
+**A. 减少和消除图层混合**
+
+1.  **设置 `backgroundColor`**：
+    *   **最常见的问题**：`UILabel`, `UIImageView` 等控件默认的 `backgroundColor` 是 `nil`（即透明）。如果它们被放在一个有背景色的父视图上，就会发生图层混合。
+    *   **解决方案**：为 Cell 内的每个视图控件（特别是 `UILabel`）显式设置一个**不透明的背景色**。如果它的背景应该和 Cell 的背景一样，就设置成 Cell 的背景色。
+        ```objc
+        // 在 MyTableViewCell.m 中
+        myLabel.backgroundColor = [UIColor whiteColor]; // 或者 self.contentView.backgroundColor
+        myLabel.layer.masksToBounds = YES; // 对于 UILabel，设置这个可以进一步优化性能
+        ```
+
+2.  **设置 `opaque` 属性**：
+    *   向系统表明这个视图是完全不透明的。这可以让渲染系统进行一些优化，比如在绘制时跳过其后面的任何内容。
+    *   当你确定一个视图（及其子视图）完全不透明时，可以设置 `view.layer.opaque = YES;`。`UIImageView` 默认就是 `YES`。
+
+3.  **避免使用 `alpha` < 1.0**：
+    *   如果只是想让一个视图的颜色变浅，**不要**直接设置 `view.alpha = 0.8;`。
+    *   **更好的方法**是计算出一个混合后的**不透明颜色**，并直接使用这个颜色。例如，如果背景是白色，你想要一个 80% 透明度的黑色文字，那么直接设置文字颜色为 20% 的灰色 (`[UIColor colorWithWhite:0.2 alpha:1.0]`) 效果是一样的，但完全不透明。
+
+**B. 避免离屏渲染**
+
+我们在之前的讨论中已经详细列出了策略，这里针对 `UITableView` 场景再强调一下：
+
+1.  **圆角 (`cornerRadius` + `masksToBounds`)**：
+    *   **最佳方案**：让 UI 设计师直接提供带圆角的图片。
+    *   **次优方案**：使用 `CAShapeLayer` 作为 `mask`，或者在后台线程异步绘制圆角图片。
+    *   **避免**：直接在 `cellForRowAtIndexPath` 中对 Cell 的 `layer` 设置 `cornerRadius` 和 `masksToBounds`。
+
+2.  **阴影 (`shadow`)**：
+    *   **必须**设置 `shadowPath` 来预先告诉 Core Animation 阴影的形状，避免离屏计算。
+        ```objc
+        // 在 MyTableViewCell.m 的 layoutSubviews 方法中设置
+        - (void)layoutSubviews {
+            [super layoutSubviews];
+            self.layer.shadowPath = [UIBezierPath bezierPathWithRect:self.bounds].CGPath;
+        }
+        ```
+
+3.  **光栅化 (`shouldRasterize`)**：
+    *   再次强调，这是一个**缓存**机制，它本身会**触发一次离屏渲染**。
+    *   **明智地使用它**：只对那些内容**静态不变**但视觉效果复杂（比如包含阴影、圆角、多种控件）的 Cell 开启，可以极大提升后续滚动的性能。对于内容频繁变化的 Cell，则要禁用。
+
+#### 核心要点
+
+*   **打开调试开关**：善用 `Color Blended Layers` (红色) 和 `Color Off-screen Rendered` (黄色) 来定位问题。
+*   **消灭红色 (混合)**：给控件设置**不透明的背景色**，避免使用 `alpha` 透明度。
+*   **消灭黄色 (离屏)**：高效处理**圆角**和**阴影**，这是 `UITableView` 中最常见的离屏渲染来源。
+
+通过对 GPU 渲染层面的优化，你可以进一步压榨出列表的性能，使其在各种设备上都能如丝般顺滑。
+
+接下来，我们可以讨论一些更零散但同样有效的“锦上添花”的优化技巧。
 
 ## oc的cell重用机制 重用的数量由什么决定
 
