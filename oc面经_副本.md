@@ -1488,7 +1488,65 @@ dispatch_async(queue, ^{    // 异步执行 + 串行队列
 
 ## GCD、NSThread、NSOperation性能上有何区别
 
-## NSNotificationCenter通知中心的实现原理
+## GCD和NSOperation的区别？
+
+### 一、抽象层次与核心概念
+
+| 特性         | GCD (Grand Central Dispatch)                                 | NSOperation / NSOperationQueue                               |
+| :----------- | :----------------------------------------------------------- | :----------------------------------------------------------- |
+| **核心概念** | **任务 (Task)** 和 **队列 (Queue)**                          | **操作 (Operation)** 和 **队列 (Queue)**                     |
+| **抽象层次** | **更底层，更轻量**。它是基于 C 的 API，直接与系统内核的线程调度交互。你关注的是“把这个 Block 扔到这个队列里执行”。 | **更高层，面向对象**。它是对 GCD 的一层封装，提供了更多高级功能。你关注的是“创建一个操作对象，配置它，然后添加到队列里”。 |
+| **本质**     | **First-In-First-Out (FIFO) 队列**。任务一旦提交，就按顺序等待调度。 | **更灵活的队列**。虽然默认也是 FIFO，但可以通过设置**优先级**和**依赖关系**来改变实际的执行顺序。 |
+
+---
+
+### 二、核心功能与特性对比
+
+| 功能点              | GCD                                                          | NSOperation / NSOperationQueue                               |
+| :------------------ | :----------------------------------------------------------- | :----------------------------------------------------------- |
+| **1. 依赖关系**     | **不支持**。你无法简单地声明“任务 C 必须在任务 A 和 B 完成后执行”。虽然可以通过 `dispatch_group` 或 `dispatch_barrier` 间接模拟，但比较繁琐。 | **原生支持，非常强大**。这是 `NSOperation` 的**杀手级特性**。<br> `[operationC addDependency:operationA];`<br> `[operationC addDependency:operationB];`<br> 这样可以轻松构建复杂的任务执行图。 |
+| **2. 状态控制**     | **不支持**。任务一旦提交到队列，你就无法中途控制它。它会一直执行直到完成。你不能暂停、恢复或取消一个已经提交的 Block。 | **原生支持**。`NSOperation` 是一个状态机，有 `isReady`, `isExecuting`, `isFinished`, `isCancelled` 等状态。<br> - `[operation cancel]`：可以取消一个**尚未开始**或**正在执行中**的操作（需要你在操作内部检查 `isCancelled` 状态）。<br> - `[queue setSuspended:YES]`：可以**暂停**整个队列，所有未开始的任务都会被挂起。<br> - `[queue setSuspended:NO]`：可以**恢复**队列。 |
+| **3. 最大并发数**   | **不支持直接设置**。并发队列的并发数由系统 GCD 动态管理。虽然可以通过 `DispatchSemaphore` (信号量) 来间接控制并发数量，但这是一种限制手段，而非队列属性。 | **原生支持**。`NSOperationQueue` 有一个 `maxConcurrentOperationCount` 属性，可以非常方便地控制同时执行的操作数量。<br> - `queue.maxConcurrentOperationCount = 1;` // 变成了**串行队列**。<br> - `queue.maxConcurrentOperationCount = 5;` // 最多同时执行 5 个操作。 |
+| **4. 优先级 (KVO)** | **支持**。通过服务质量 (QoS) 来设置。`DISPATCH_QUEUE_PRIORITY_HIGH`, `QOS_CLASS_USER_INITIATED` 等。 | **原生支持**。`NSOperation` 有 `queuePriority` 属性 (`NSOperationQueuePriorityVeryHigh` 等)。更重要的是，你可以通过 **KVO (键值观察)** 来监听 `NSOperation` 的状态变化（如 `isFinished`），这在需要更新 UI 时非常有用。 |
+| **5. 性能**         | **更轻量，性能更高**。由于是更底层的 C API，没有额外的面向对象开销，对于简单的、一次性的后台任务，GCD 是最快的。 | **有面向对象的开销**。创建 `NSOperation` 对象比创建一个 Block 要消耗更多的内存和时间。但对于需要复杂控制的场景，这点开销完全可以忽略不计。 |
+
+---
+
+### 三、使用场景与选择
+
+**什么时候应该使用 GCD？**
+
+1.  **简单的后台任务**：当你只需要“把这个任务扔到后台执行，执行完通知我”时，GCD 是最简单、最高效的选择。
+    ```objc
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+        // Do heavy work...
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // Update UI
+        });
+    });
+    ```
+2.  **对性能要求极高的场景**：当你需要管理成千上万个小任务时，GCD 的轻量级特性更有优势。
+3.  **需要使用 GCD 特有功能时**：如 `dispatch_once` (单例模式), `dispatch_group` (等待一组任务完成), `dispatch_barrier` (栅栏函数，用于线程安全的读写分离), `dispatch_source` (监听系统事件)。
+
+**什么时候应该使用 NSOperation / NSOperationQueue？**
+
+1.  **需要复杂的任务依赖关系时**：这是**首选** `NSOperation` 的最重要理由。比如，一个多步骤流程：1. 下载数据 -> 2. 解析数据 -> 3. 更新数据库。这三步可以被完美地建模为三个有依赖关系的 `NSOperation`。
+2.  **需要随时取消、暂停、恢复任务时**：比如一个图片下载队列，当用户离开当前页面时，你需要取消所有未完成的下载任务。
+3.  **需要控制并发数量时**：比如，创建一个最大并发数为 3 的网络请求队列，以避免同时对服务器发起过多请求。
+4.  **需要重用和封装任务逻辑时**：你可以创建 `NSOperation` 的子类，将复杂的任务逻辑（包括状态管理）封装在内部，使其成为一个可重用的组件。
+
+### 总结
+
+|                | GCD                                               | NSOperation                        |
+| :------------- | :------------------------------------------------ | :--------------------------------- |
+| **定位**       | 轻量级的任务调度器                                | 功能强大的任务管理器               |
+| **优势**       | **简单、快速、轻量**                              | **功能全面、可控性强、面向对象**   |
+| **核心卖点**   | 性能、`dispatch_group`, `dispatch_barrier`        | **依赖关系、状态控制、并发数控制** |
+| **一句话总结** | **“Fire and Forget”** (扔出去就不管了) 的简单任务 | 需要精细化管理的**复杂工作流**     |
+
+在实际开发中，两者经常会结合使用。大部分简单的后台任务和 UI 更新，用 GCD 就足够了。而对于复杂的、业务逻辑性强的多线程场景，比如网络层、数据处理层，`NSOperation` 往往是更优雅、更健壮的选择。
+
+## 通知中心的实现原理
 
 ```objective-c
     // a. Observer: 谁来收听 (通常是 self)
@@ -2627,56 +2685,101 @@ objc_msgSend(receiver, selector, arg1, arg2, ...);
 
 ## ios怎么实现单例模式
 
+## 1. 什么时候会触发 `+initialize`
+
+Objective-C 里 `+initialize` 的触发条件是：
+
+- **第一次**向这个类发送消息（任何类方法或实例方法），都会先调用一次 `+initialize`。
+
+- 调用 `sharedInstance` 只是其中一个触发点。比如：
+
+  ```objc
+  [MyManager class]; // 也会触发 +initialize
+  [MyManager new];   // 也会触发 +initialize
+  [MyManager someOtherClassMethod]; // 也会触发 +initialize
+  ```
+
+👉 所以，只要这个类被动过，`+initialize` 就会执行。并不是说一定要等到 `sharedInstance` 才会执行。
+
+------
+
+## 2. 饿汉 vs 懒汉 的区别
+
+- **饿汉式**：类加载（或第一次使用类）时，就会初始化单例对象。
+
+  - 在你的代码里，`+initialize` 被调用时，单例就直接建好了。
+  - 即使你从来没调用过 `sharedInstance`，只要你用过这个类，单例就已经存在。
+
+- **懒汉式**：只有第一次调用 `sharedInstance` 的时候才会创建对象。
+
+  - 通常写法是 `dispatch_once`：
+
+    ```objc
+    + (instancetype)sharedInstance {
+        static MyManager *instance = nil;
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            instance = [[self alloc] init];
+        });
+        return instance;
+    }
+    ```
+
+------
+
+## 3. 为什么你的写法算“饿汉”
+
+因为它的创建动作放在 `+initialize`，而不是放在 `sharedInstance` 内部。
+ 也就是说：
+
+- **类一旦被动过**（无论是不是 `sharedInstance`），就会触发 `+initialize` → 创建 `instance`。
+- 这跟懒汉式“只有在第一次 `sharedInstance` 时才去 new”不一样。
+
+所以严格来说：
+ 👉 你的写法 **属于饿汉式**，只是它的“饿”不是在程序启动时马上执行，而是在“第一次接触这个类的时候”就执行。
+
+------
+
+## 4. 举个例子
+
 ```objc
-// MyManager.m
-// 用NS_UNAVAILABLE将 init, new, copy, mutableCopy这四个方法全部私有
-#import "MyManager.h"
+[MyManager class];   // 还没调用 sharedInstance
+```
+
+这行代码本身不会调用 `sharedInstance`，但是会触发 `+initialize`，于是单例就被创建了。
+ 这证明它不是严格的懒汉。
+
+## 🔹 懒汉式单例（第一次使用时才创建实例）
+
+### 特点
+
+- 第一次调用时才创建实例，按需分配。
+- 常用 `dispatch_once` 来保证线程安全。
+
+### 实现示例
+
+```objective-c
+@interface MyManager : NSObject
++ (instancetype)sharedInstance;
+@end
 
 @implementation MyManager
 
-// 核心的全局访问方法
-+ (instancetype)sharedManager {
-    // 1. 声明一个静态的、指向唯一实例的指针。
-    //    `static` 保证了这个变量在整个文件范围内是唯一的，并且在App生命周期内只被初始化一次。
-    static MyManager *sharedInstance = nil;
-    
-    // 2. 声明一个 dispatch_once_t 令牌。
-    //    这是一个必须的、用于 dispatch_once 的“锁”，它也必须是静态的。
+static MyManager *instance = nil;
+
++ (instancetype)sharedInstance {
     static dispatch_once_t onceToken;
-    
-    // 3. 使用 dispatch_once 来执行初始化代码。
-    //    这是整个实现中最关键的部分。
     dispatch_once(&onceToken, ^{
-        // 这个 Block 里的代码，在整个App的生命周期中，
-        // 无论从哪个线程、被调用多少次，都只会被执行“有且仅有”的一次。
-        // GCD 底层保证了其原子性和线程安全性。
-        sharedInstance = [[self alloc] initInstance];
+        instance = [[self alloc] init];
     });
-    
-    // 4. 返回那个唯一的、已经被创建好的实例。
-    return sharedInstance;
+    return instance;
 }
-
-// 一个私有的、真正的初始化方法
-- (instancetype)initInstance {
-    self = [super init];
-    if (self) {
-        NSLog(@"MyManager instance has been initialized.");
-    }
-    return self;
-}
-
-// 覆盖 allocWithZone: 来防止通过 [[MyManager alloc] init] 创建新实例 (更彻底的保护)
-+ (instancetype)allocWithZone:(struct _NSZone *)zone {
-    // 理论上，有了 dispatch_once 和 NS_UNAVAILABLE 已经足够安全。
-    // 但覆盖 allocWithZone 是一个更“偏执”、更经典的保护方式，
-    // 确保任何形式的 alloc 调用都返回同一个实例。
-    return [self sharedManager];
-}
-
 
 @end
 ```
+
+🔸 优点：需要时才创建，节省资源。
+ 🔸 缺点：实现比饿汉式稍微复杂一点。
 
 ## weak在所在对象释放后 是如何置空的
 
@@ -6783,6 +6886,485 @@ RunLoop的核心作用是管理和调度事件，并与系统的渲染时机进�
 
 将UI操作限制在主线程，是iOS（及其他主流GUI系统）为了**从根本上解决并发带来的复杂性和不确定性**而做出的关键设计决策。它通过一个**串行化的RunLoop模型**，确保了UI状态的**一致性、可预测性和稳定性**，虽然对开发者提出了一定的规范要求，但极大地简化了UI编程的难度，并为流畅的用户体验提供了坚实的基础。
 
+## 在init方法里面，设置背景颜色，会生效吗 会生效。为什么会？
+
+是的，你的判断完全正确：**在 `init` 方法里设置背景颜色，会生效。**
+
+这是一个非常好的问题，因为它触及了 `UIView` 对象生命周ogcyle和 iOS 渲染机制的核心。理解“为什么会生效”，能让你对整个视图系统有更深刻的认识。
+
+我们可以把这个过程分解为三个独立的阶段：**1. 状态设定**，**2. 加入层级**，和 **3. 最终渲染**。
+
+---
+
+### 1. 状态设定 (State Configuration) - `init` 方法的职责
+
+当你调用一个 `UIView` 的 `init`、`initWithFrame:` 或 `initWithCoder:` 方法时，你正在做的仅仅是**创建一个 Objective-C 对象并配置它的初始状态**。
+
+*   **内存分配**：系统为这个 `UIView` 实例分配一块内存。
+*   **属性赋值**：你在这块内存中为对象的各个属性（实例变量）赋值。
+
+所以，当你在 `init` 方法里写下这行代码：
+```objc
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        // 关键：你正在做的事情是“状态设定”
+        self.backgroundColor = [UIColor redColor];
+    }
+    return self;
+}
+```
+你并没有在屏幕上画任何东西。你只是在这个 `UIView` 对象的内存中，将 `_backgroundColor` 这个实例变量的值设置为了 `[UIColor redColor]`。
+
+可以把它想象成你正在填写一张“视图规格表”：
+*   Frame: `{0, 0, 100, 100}`
+*   **BackgroundColor: Red**
+*   Alpha: 1.0
+*   ...
+
+此时，这个 `UIView` 对象只是一个存在于内存中的、配置好的数据结构。它知道自己“应该”是红色的，但它还没有机会展示自己。
+
+---
+
+### 2. 加入层级 (Joining the Hierarchy) - `addSubview:` 的职责
+
+一个孤立的 `UIView` 对象是无法被渲染的。它必须被添加到一个可见的视图层级中，这个层级的根节点通常是 `UIWindow`。
+
+这一步通常在 `UIViewController` 的 `viewDidLoad` 或其他生命周期方法中完成：
+```objc
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    
+    MyCustomView *customView = [[MyCustomView alloc] initWithFrame:CGRectMake(50, 50, 100, 100)];
+    
+    // 关键：将配置好的视图加入到视图层级中
+    // 从这一刻起，渲染系统才知道有这么一个视图需要被绘制
+    [self.view addSubview:customView]; 
+}
+```
+当 `addSubview:` 被调用时，`customView` 就成为了 `self.view` 的一个子视图。现在，它正式成为了屏幕渲染管线的一部分。系统知道在下一次屏幕刷新时，需要考虑绘制这个 `customView` 了。
+
+---
+
+### 3. 最终渲染 (The Actual Rendering) - Run Loop 和 Render Server 的职责
+
+iOS 的界面并不会在你调用 `addSubview:` 的瞬间就立刻重绘。它会等待当前的**主运行循环（Run Loop）** 结束，然后在一个统一的时间点处理所有 UI 的更新。
+
+这个过程大致是：
+1.  **标记为“脏”**：当一个视图被添加到层级中，或者它的任何影响外观的属性（如 `frame`, `backgroundColor`）被改变时，它会被系统标记为“需要重绘”（dirty）。
+2.  **提交图层树**：在 Run Loop 的末尾，你的 App 会将所有视图的图层（`CALayer`）信息打包成一个“图层树”，然后通过 IPC (进程间通信) 发送给一个独立的进程——**Render Server**。
+3.  **Render Server 工作**：Render Server 接收到这个图层树后，开始工作。它会遍历树中的每一个图层，读取它们的**状态**（就是你在 `init` 中设置的那些属性）。
+4.  **执行绘制**：当它处理到 `customView` 的图层时，它会读取规格表：
+    *   “哦，这个图层的 `frame` 是 `{50, 50, 100, 100}`。”
+    *   “它的 `backgroundColor` 是**红色**。”
+    *   “...其他属性...”
+5.  **调用 GPU**：Render Server 根据这些信息，组合成渲染指令，交给 GPU。GPU 最终在屏幕上对应的像素点上填充红色。
+
+### 总结：为什么会生效？
+
+**因为 `init` 方法成功地设置了对象的内部状态（State），而这个状态被后续的渲染流程所读取和使用。**
+
+流程可以简化为：
+
+1.  **`init` (对象内部)**：`self.backgroundColor = [UIColor redColor];`
+    *   **结果**：`myView` 对象在内存中的 `_backgroundColor` 属性被设置为红色。**它记住了自己应该是红色的。**
+
+2.  **`addSubview:` (加入层级)**：`[parentView addSubview:myView];`
+    *   **结果**：`myView` 进入了“待渲染”的队列。
+
+3.  **Run Loop Tick (系统渲染)**：Render Server 开始工作。
+    *   **结果**：Render Server 查看 `myView` 的属性，发现了它“记住”的颜色是红色，于是命令 GPU 将其绘制成红色。
+
+所以，`init` 方法是设置蓝图和规格的阶段，虽然没有立即产生视觉效果，但它为未来的视觉效果提供了必不可少的数据基础。
+
+## NSThread，GCD，NSOperation相关的。开启一条线程的方法？线程可以取消吗
+
+好的，我们来分别看一下 `NSThread`、`GCD` 和 `NSOperation` 这三种技术如何开启线程，以及它们在取消线程（任务）方面的能力。
+
+---
+
+### 一、如何开启一条线程？
+
+#### 1. `NSThread`
+
+`NSThread` 是最轻量级的、面向对象的线程管理方式。它允许你直接创建和控制一个线程。
+
+**方法一：创建并手动启动**
+```objc
+// 创建一个 NSThread 对象
+NSThread *thread = [[NSThread alloc] initWithTarget:self selector:@selector(runTask:) object:@"Parameter"];
+// 手动启动线程
+[thread start];
+
+...
+
+- (void)runTask:(id)param {
+    NSLog(@"Current Thread: %@, Parameter: %@", [NSThread currentThread], param);
+    // 执行耗时操作...
+}
+```
+
+**方法二：分离线程（创建后自动启动）**
+这种方式创建的线程会在任务执行完毕后自动销毁，你无法再获取到这个线程对象。
+```objc
+[NSThread detachNewThreadSelector:@selector(runTask:) toTarget:self withObject:@"Parameter"];
+```
+
+**方法三：NSObject 的分类方法（隐式创建并启动）**
+这是 `NSObject` 的一个分类，提供了一个非常便捷的方式来将任务放到后台线程执行。
+```objc
+[self performSelectorInBackground:@selector(runTask:) withObject:@"Parameter"];
+```
+
+#### 2. `GCD (Grand Central Dispatch)`
+
+GCD 是基于任务和队列的，你**不直接创建线程**。你把任务（Block）扔给一个队列，GCD 会智能地从它管理的**线程池**中调配一个线程来执行你的任务。
+
+**开启一个并发任务（最常用）**
+```objc
+// 获取一个全局并发队列
+dispatch_queue_t queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+
+// 异步地将任务添加到队列中
+dispatch_async(queue, ^{
+    NSLog(@"Current Thread: %@", [NSThread currentThread]);
+    // 执行耗时操作...
+});
+```
+
+#### 3. `NSOperation` & `NSOperationQueue`
+
+`NSOperation` 也是面向任务的，并且是对 GCD 的更高层封装。你同样不直接管理线程，而是将“操作”（`NSOperation`）添加到“操作队列”（`NSOperationQueue`）中。
+
+**方法一：使用 `NSBlockOperation`**
+```objc
+// 创建一个操作队列（默认是并发的）
+NSOperationQueue *queue = [[NSOperationQueue alloc] init];
+
+// 创建一个 Block 操作
+NSBlockOperation *operation = [NSBlockOperation blockOperationWithBlock:^{
+    NSLog(@"Current Thread: %@", [NSThread currentThread]);
+    // 执行耗时操作...
+}];
+
+// 将操作添加到队列中，队列会自动调度线程执行
+[queue addOperation:operation];
+```
+
+**方法三：使用 `addOperationWithBlock:` 快捷方式**
+```objc
+NSOperationQueue *queue = [[NSOperationQueue alloc] init];
+[queue addOperationWithBlock:^{
+    NSLog(@"Current Thread: %@", [NSThread currentThread]);
+    // 执行耗时操作...
+}];
+```
+
+---
+
+### 二、线程（任务）可以取消吗？
+
+这是一个非常关键的区别点。
+
+#### 1. `NSThread` - **可以，但需要手动配合**
+
+*   **如何取消**：你可以对 `NSThread` 对象调用 `[thread cancel];`。
+*   **原理**：这个 `cancel` 方法并**不会**粗暴地终止线程。它只是在线程内部设置了一个 `isCancelled` 的标志位为 `YES`。
+*   **你的责任**：你**必须**在你的耗时任务代码中（比如一个 `for` 循环或 `while` 循环内部）定期地、频繁地检查这个标志位。如果发现 `[NSThread currentThread].isCancelled` 为 `YES`，你就要**主动地、优雅地**退出任务，比如 `return;`。
+
+```objc
+- (void)runTask:(id)param {
+    for (int i = 0; i < 10000; i++) {
+        // 关键：定期检查取消状态
+        if ([[NSThread currentThread] isCancelled]) {
+            NSLog(@"Thread was cancelled. Exiting.");
+            return; // 主动退出
+        }
+        
+        // 执行一小部分工作...
+        NSLog(@"Working... %d", i);
+        [NSThread sleepForTimeInterval:0.1];
+    }
+}
+```
+**结论**：`NSThread` 的取消是一种**协作式**的机制，不是强制性的。
+
+#### 2. `GCD` - **不可以**
+
+*   **GCD 的设计哲学是“Fire and Forget”**（发后不理）。
+*   一旦你把一个任务 Block `dispatch_async` 到一个队列中，你就**没有任何办法**从外部中途取消它。这个任务会一直执行，直到它自己完成。
+*   **变通方法**：你可以模仿 `NSThread` 的方式，自己设置一个外部的 `BOOL` 标志位，然后在 Block 内部去检查这个标志位。但这并不是 GCD 原生支持的功能，需要自己管理状态同步问题（比如使用原子属性 `atomic`）。
+
+```objc
+// 这是一个不完美的模拟，需要注意线程安全
+@property (atomic, assign) BOOL isTaskCancelled; 
+
+- (void)startGcdTask {
+    self.isTaskCancelled = NO;
+    dispatch_async(dispatch_get_global_queue(0, 0), ^{
+        for (int i = 0; i < 10000; i++) {
+            if (self.isTaskCancelled) {
+                NSLog(@"GCD task was cancelled. Exiting.");
+                return;
+            }
+            // ...
+        }
+    });
+}
+
+- (void)cancelGcdTask {
+    self.isTaskCancelled = YES;
+}
+```
+**结论**：GCD **原生不支持**取消。
+
+#### 3. `NSOperation` & `NSOperationQueue` - **可以，并且是原生支持的强大特性**
+
+*   `NSOperation` 是这三者中对取消操作支持得**最好、最完善**的。
+*   **如何取消**：
+    *   取消单个操作：`[operation cancel];`
+    *   取消队列中所有操作：`[queue cancelAllOperations];`
+*   **原理**：
+    *   和 `NSThread` 类似，调用 `cancel` 也是设置内部的 `isCancelled` 标志位为 `YES`。
+
+```objc
+NSOperationQueue *queue = [[NSOperationQueue alloc] init];
+NSBlockOperation *operation = [NSBlockOperation blockOperationWithBlock:^{
+    for (int i = 0; i < 10000; i++) {
+        // 关键：在 NSOperation 内部检查 isCancelled
+        // 注意：这里没有 self，因为 operation 是局部变量，需要弱引用
+        // 如果是在 NSOperation 子类中，直接用 self.isCancelled
+        // 这里用 operation 本身来检查，但要注意 block 的循环引用
+        // 更安全的做法是：
+        // __weak NSBlockOperation *weakOp = operation;
+        // if (weakOp.isCancelled) { ... }
+        if (operation.isCancelled) {
+            NSLog(@"Operation was cancelled. Exiting.");
+            return;
+        }
+        // ...
+    }
+}];
+
+[queue addOperation:operation];
+
+// ... 在未来的某个时刻
+[operation cancel];
+```
+**结论**：`NSOperation` **原生支持**强大的、协作式的取消机制，是其相对于 GCD 的核心优势之一。
+
+### 总结
+
+| 技术              | 如何开启线程/任务                           | 是否支持取消                              |
+| :---------------- | :------------------------------------------ | :---------------------------------------- |
+| **`NSThread`**    | 直接创建和启动线程对象。                    | **是** (协作式，需手动检查 `isCancelled`) |
+| **`GCD`**         | 将任务 Block 添加到队列，由系统线程池管理。 | **否** (原生不支持)                       |
+| **`NSOperation`** | 将操作对象添加到操作队列。                  | **是** (原生支持，协作式，功能强大)       |
+
+## 知道iOS里面有哪些数据存储方法？什么时候该用哪些方法存储？
+
+
+
+### 方案一：`NSUserDefaults` (或 Swift 中的 `UserDefaults`)
+
+#### 1. 它是什么？
+
+`NSUserDefaults` 是一个**轻量级的持久化键值存储**系统。你可以把它想象成 App 的一个专属“**便签本**”或“**设置面板**”。
+
+*   **键值存储 (Key-Value)**：就像 `NSDictionary` 一样，你用一个唯一的字符串（Key）来存取一个值（Value）。
+*   **持久化 (Persistent)**：你存入的数据，即使用户关闭甚至重启 App，下次打开时依然存在。
+*   **轻量级 (Lightweight)**：它被设计用来存储少量、简单的数据。它的底层实现通常是一个小型的 Plist (属性列表) 文件，存放在 App 的沙盒目录里。
+
+#### 2. 适合存储什么？(The Right Job)
+
+`NSUserDefaults` 的设计目标非常明确：**存储用户的偏好设置和应用的简单状态**。
+
+**典型用例**:
+
+*   **用户设置**:
+    *   `"isNightModeEnabled": true` (夜间模式是否开启 - `Bool`)
+    *   `"fontSize": 16` (用户选择的字体大小 - `Int`)
+    *   `"username": "john_doe"` (用户上次登录的账号名 - `String`)
+    *   `"themeColor": "blue"` (用户选择的主题颜色 - `String`)
+
+*   **应用状态**:
+    *   `"hasShownOnboarding": true` (是否已经向用户展示过引导页 - `Bool`)
+    *   `"appLaunchCount": 25` (应用启动了多少次 - `Int`)
+
+**支持的数据类型**:
+它只能存储基础的 Plist 类型，包括 `NSNumber` (包含 `Int`, `Float`, `Bool`), `NSString`, `NSDate`, `NSData`, `NSArray`, 和 `NSDictionary`。
+
+#### 3. 如何使用？(The Code)
+
+它的 API 非常简单直观。
+
+```objc
+// 获取单例对象
+NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+
+// --- 写/存数据 ---
+
+// 存储一个 Bool 值
+[defaults setBool:YES forKey:@"isNightModeEnabled"];
+
+// 存储一个整型
+[defaults setInteger:16 forKey:@"fontSize"];
+
+// 存储一个字符串
+[defaults setObject:@"john_doe" forKey:@"username"];
+
+
+// --- 读/取数据 ---
+
+// 读取 Bool 值 (如果 key 不存在，会返回默认值 NO)
+BOOL isNightMode = [defaults boolForKey:@"isNightModeEnabled"];
+
+// 读取整型 (如果 key 不存在，会返回默认值 0)
+NSInteger fontSize = [defaults integerForKey:@"fontSize"];
+
+// 读取对象 (如果 key 不存在，会返回 nil)
+NSString *username = [defaults stringForKey:@"username"]; // 推荐使用 specific getter
+// 或者通用 getter
+// NSString *username = [defaults objectForKey:@"username"];
+
+
+// --- 删除数据 ---
+[defaults removeObjectForKey:@"username"];
+
+
+// --- 立即同步 ---
+// 通常你不需要手动调用它。系统会在合适的时机自动将数据写入磁盘。
+// 只有在极少数情况下，比如你担心 App 即将崩溃需要立即保存时，才可能用到。
+// [defaults synchronize]; // 在现代 iOS 中已不推荐主动调用
+```
+
+#### 4. 关键的“不适合”做什么？(The Wrong Job)
+
+理解它的局限性至关重要，滥用 `NSUserDefaults` 是新手常见的错误。
+
+*   **绝对不能存储敏感信息**：密码、API Token、密钥等。因为它是**明文存储**在文件里的，任何能接触到设备文件系统的人（比如越狱用户）都能轻易看到。
+*   **不适合存储大量数据**：不要把从服务器请求来的成百上千条新闻列表、聊天记录等存进去。因为 `NSUserDefaults` 会在某个时间点将整个文件加载到内存，大数据量会严重影响性能和内存占用。
+*   **它不是数据库**：它不支持查询、排序或条件过滤。如果你有“查找所有年龄大于 18 岁的用户”这类需求，`NSUserDefaults` 完全无能为力。
+
+#### 总结
+
+| 特性         | 描述                                                         |
+| :----------- | :----------------------------------------------------------- |
+| **核心定位** | 应用的“偏好设置面板”                                         |
+| **优点**     | **API 极其简单**，轻量，自动持久化                           |
+| **缺点**     | **不安全**，只适合**少量、非敏感**数据                       |
+| **黄金法则** | 当你问自己“这个数据是不是一个‘设置’项？”时，如果答案是肯定的，那么 `NSUserDefaults` 很可能就是正确的选择。 |
+
+好的，我们来看下一个。在处理比用户偏好设置更复杂、特别是涉及**敏感信息**时，`NSUserDefaults` 显然力不从心。这时，我们的主角就该登场了。
+
+---
+
+### 方案二：`Keychain` (钥匙串)
+
+#### 1. 它是什么？
+
+`Keychain` (钥匙串) 是 iOS 系统提供的一个**高度安全的、加密的**数据存储服务。你可以把它想象成一个由操作系统管理的、极其坚固的**保险箱**。
+
+*   **安全加密 (Secure & Encrypted)**：存入钥匙串的数据会被系统使用行业标准的加密算法（如 AES）进行加密。即使设备被越狱，文件系统被访问，黑客也无法轻易解密其中的内容。
+*   **独立于应用 (App-Independent)**：这个“保险箱”不完全属于你的 App。它是整个操作系统的一部分。这意味着它的生命周期和你的 App 是**分离**的。
+*   **集中管理 (Centralized)**：系统统一管理所有 App 的钥匙串数据，并实施严格的访问控制。
+
+#### 2. 适合存储什么？(The Right Job)
+
+`Keychain` 的唯一目的就是：**存储少量、极其敏感的数据**。
+
+**典型用例**:
+
+*   **用户凭证**:
+    *   用户密码
+    *   登录后服务器返回的 `access_token` 或 `refresh_token`
+*   **私密信息**:
+    *   银行卡信息（虽然通常由更专业的支付 SDK 处理）
+    *   加密密钥、私钥
+    *   证书
+
+**一句话原则：任何“泄露出去会导致严重后果”的数据，都应该存储在 `Keychain` 中。**
+
+#### 3. 如何使用？(The Code)
+
+直接使用 Apple 提供的原生 `Security.framework` API 是一件非常痛苦和复杂的事情。它是纯 C 语言风格的，需要和 `CFDictionary` 等 Core Foundation 类型打交道，代码冗长且易错。
+
+因此，在实际项目中，**几乎所有开发者都会使用一个成熟的第三方开源库**来封装 `Keychain` 的操作。
+
+*   **推荐的封装库**：
+    *   `SAMKeychain` (Objective-C, 老牌、稳定)
+    *   `KeychainAccess` (Swift, 非常流行)
+
+下面以经典的 `SAMKeychain` 为例，展示其用法是多么简单：
+
+```objc
+#import "SAMKeychain.h"
+
+// --- 定义一个 Service Name 和 Account Name ---
+// 这两个字符串组合起来，作为你存储数据的唯一标识
+NSString * const kKeychainService = @"com.myapp.service";
+NSString * const kUserAccount = @"currentUser"; // 可以用 userID 或一个固定字符串
+
+// --- 写/存数据 ---
+// 假设 loginToken 是从服务器获取的敏感 Token 字符串
+NSError *error = nil;
+BOOL success = [SAMKeychain setPassword:loginToken 
+                              forService:kKeychainService 
+                                 account:kUserAccount 
+                                   error:&error];
+if (success) {
+    NSLog(@"Token 成功存入钥匙串！");
+} else {
+    NSLog(@"存储失败: %@", error);
+}
+
+
+// --- 读/取数据 ---
+NSError *readError = nil;
+NSString *storedToken = [SAMKeychain passwordForService:kKeychainService 
+                                                 account:kUserAccount 
+                                                   error:&readError];
+if (storedToken) {
+    NSLog(@"从钥匙串中读取到 Token: %@", storedToken);
+} else {
+    NSLog(@"读取失败或 Token 不存在: %@", readError);
+}
+
+
+// --- 删除数据 ---
+NSError *deleteError = nil;
+BOOL deleteSuccess = [SAMKeychain deletePasswordForService:kKeychainService 
+                                                    account:kUserAccount 
+                                                      error:&deleteError];
+if (deleteSuccess) {
+    NSLog(@"成功从钥匙串删除 Token！");
+}
+```
+
+#### 4. `Keychain` 的独特优势与特性
+
+*   **App 卸载后数据不丢失**：
+    这是 `Keychain` 最神奇的特性之一。默认情况下，用户**删除了你的 App，你存储在钥匙串里的数据依然会保留下来**。当用户下一次重新安装你的 App 时，你仍然可以读取到之前存储的 Token。
+    *   **应用场景**：可以实现“静默登录”或“恢复登录状态”的绝佳用户体验。
+
+*   **跨 App 共享数据**：
+    如果你在同一个开发者账号下有多个 App，可以通过配置 `App Groups` 和 `Keychain Sharing` 权限，让这些 App 访问同一个钥匙串项目。
+    *   **应用场景**：实现单点登录 (Single Sign-On, SSO)，用户在一个 App 中登录后，打开你的另一个 App 就自动是登录状态。
+
+#### 5. 局限性
+
+*   **不适合大数据**：`Keychain` 被设计用来存储少量数据，比如几十到几百字节的字符串。不要用它来存储图片、JSON 大段文本等。
+*   **读写性能较低**：由于涉及加密和解密操作，`Keychain` 的读写速度远慢于 `NSUserDefaults` 或文件系统。不应在需要高性能、频繁读写的场景（如循环中）使用。
+
+#### 总结
+
+| 特性         | 描述                                                         |
+| :----------- | :----------------------------------------------------------- |
+| **核心定位** | 系统的“加密保险箱”                                           |
+| **优点**     | **高度安全**，**App 卸载后数据不丢失**，可跨 App 共享        |
+| **缺点**     | **API 复杂 (需封装)**，不适合大数据，读写慢                  |
+| **黄金法则** | 当你处理的是**密码、Token** 或任何需要加密保护的凭证时，`Keychain` 是**唯一正确**的选择。 |
+
 # 计网
 
 ## ***dns解析的过程
@@ -7307,6 +7889,19 @@ TCP的设计目标就是解决以上所有问题。
   - 拥塞避免算法：**每当收到一个 ACK 时，cwnd 增加 1/cwnd**，线性增加
   - 拥塞发生，启用快速重传，`cwnd = cwnd/2` ，也就是设置为原来的一半; `ssthresh = cwnd`;
   - 快速恢复
+
+## MTU 与 MSS 的区别
+
+- **MTU**：链路层能承载的最大 IP 包大小。
+- **MSS（Maximum Segment Size）**：TCP 层在一个报文段中能放的最大数据量。
+
+关系是：
+
+MSS=MTU−IP头大小−TCP头大小MSS = MTU - IP头大小 - TCP头大小MSS=MTU−IP头大小−TCP头大小
+
+以太网常见情况：
+
+MSS=1500−20−20=1460 字节MSS = 1500 - 20 - 20 = 1460 \ \text{字节}MSS=1500−20−20=1460 字节
 
 ## ipv4和ipv6有什么区别
 
