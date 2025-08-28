@@ -515,11 +515,7 @@ objc_autoreleasePoolPop(pool);
 **主要用途和特点：**
 
 1.  **声明私有属性 (Private Properties)**：这是最核心的用途。我们经常在 `.h` 文件中将属性声明为 `readonly`（只读），然后在 `.m` 文件的类扩展中将其重新声明为 `readwrite`（可读写），这样就实现了“对外只读，对内可写”的封装。
-
 2.  **声明私有方法 (Private Methods)**：在类扩展中声明的方法，相当于这个类的私有方法。它们无需对外暴露接口，但可以在 `.m` 文件内部被调用，并能享受到编译器的类型检查。
-
-3.  **【重要】可以添加新的实例变量**：因为类扩展是主类实现的一部分，在编译时，它里面的所有信息都会被整合到主类中。因此，它**可以**像主接口一样声明 `@property`，编译器会自动为其生成对应的实例变量。
-
 4.  **与主类紧密耦合**：类扩展中声明的一切，都必须在主类的 `@implementation` 块中实现。它不是一个独立的模块，而是主类实现的一个“补充部分”。
 
 **语法：**
@@ -552,8 +548,6 @@ objc_autoreleasePoolPop(pool);
 @end
 ```
 
-
-
 **一句话总结：**
 
 *   想给一个**没有源码**的类（如`NSString`）加点新功能，用 **Category**。
@@ -562,10 +556,6 @@ objc_autoreleasePoolPop(pool);
 ## 内存管理，arc，mrc和引用计数和autoreleasepool
 
 ## runloop的本质，observer，timer，source
-
-好的，我们完全抛开比喻，只用最直接、最基础的计算机语言来解释 `RunLoop`。
-
----
 
 ### 第一部分：RunLoop 的核心目的
 
@@ -725,8 +715,6 @@ void RunLoop::run() {
 
 ## runloop的几种模式
 
----
-
 ### 1. 什么是 RunLoop Mode？
 
 一个 `RunLoop Mode` 是一个**`Input Sources` (输入源)** 和 **`Timers` (定时器)** 的集合。
@@ -735,14 +723,7 @@ void RunLoop::run() {
 
 *   一个 `RunLoop` 对象，可以包含多个不同的 `Mode`（多个不同的任务清单）。
 *   但是，在**任何一个特定的时间点**，`RunLoop` 只能选择**其中一个 `Mode`** 来运行。
-*   当 `RunLoop` 在某个 `Mode` 下运行时，它就只会处理和监听那些被**注册到这个 `Mode` 下**的 `Sources` 和 `Timers`，而会**完全忽略**其他 `Mode` 下的所有事件源。
-
-**比喻**：
-你是一个多才多艺的员工，你有两份工作职责（两个 `Mode`）：
-*   **“日常工作”模式 (`Default Mode`)**：你的任务清单上写着“回复邮件”、“写代码”、“开会”。
-*   **“紧急救火”模式 (`Tracking Mode`)**：你的任务清单上只写着一件事——“处理线上Bug”。
-
-当你在“日常工作”模式下时，你只会处理邮件、代码和会议。即使有线上Bug的警报响了（另一个`Mode`下的事件），你也会暂时忽略。只有当你的老板命令你切换到“紧急救火”模式时，你才会放下手头所有的日常工作，专心致志地去处理Bug。
+*   当 `RunLoop` 在某个 `Mode` 下运行时，它就只会处理和监听那些被**注册到这个 `Mode` 下**的 `Sources` 和 `Timers`，而会**完全忽略**其他 `Mode` 下的所有事件源
 
 ---
 
@@ -965,10 +946,6 @@ NSThread *thread = [[NSThread alloc] initWithBlock:^{
 
 - Timer 会定期触发事件，保证 RunLoop 活着。
 
-
-
-------
-
 ### ✅ **注意点**
 
 1. **RunLoop 不会无缘无故保持运行**，必须有事件源（Port、Timer、Source）。
@@ -979,18 +956,7 @@ NSThread *thread = [[NSThread alloc] initWithBlock:^{
 
 ### 面试官：“同学，讲一下你对 Runtime 的理解吧”
 
-你可以这样分三步来回答，由浅入深，层层递进：
-
-#### 第一步：一句话定义【我是谁？】
-
 **面试官，您好。我对 Runtime 的理解是，它更像是一套处于 Objective-C 底层的、用 C 语言实现的 API 库。它的核心作用，就是把 C 语言这种静态语言的很多决策，比如调用哪个函数，都从“编译时”推迟到了“运行时”来做，这就赋予了 Objective-C 极致的动态性。**
-
-> **解析：**
-> *   **是什么**：一套 C 语言 API 库。（定位准确，不是什么虚无缥缈的东西）
-> *   **核心思想**：决策从**编译时**推迟到**运行时**。（一针见血，点出本质）
-> *   **带来了什么**：动态性。（直接说出结果）
->
-> 这一句话就给面试官一个清晰的第一印象：你抓住了重点。
 
 ---
 
@@ -1007,13 +973,6 @@ NSThread *thread = [[NSThread alloc] initWithBlock:^{
 
 **所以，调用哪个方法，是在运行时才通过这套查找机制动态确定的。**
 
-> **解析：**
-> *   **引出关键**：消息发送机制 `objc_msgSend`。
-> *   **描述流程**：清晰地描述了 `isa` -> `Class` -> `Method List` -> `IMP` 这个查找过程。这展示了你对底层细节的了解。
-> *   **体现深度**：提到了“消息转发”，说明你的知识体系比较完整，知道有补救措施。
->
-> 这一步展示了你的技术深度，证明你不是只会背概念。
-
 ---
 
 #### 第三步：举出实际应用【我能用来做什么？】
@@ -1021,14 +980,7 @@ NSThread *thread = [[NSThread alloc] initWithBlock:^{
 **正是因为 Runtime 的这套动态机制，我们才能在实际开发中实现很多强大的功能。我举几个最典型的例子：**
 
 1.  **方法交换 (Method Swizzling)**：我们可以在运行时动态地交换两个方法的实现。最经典的应用就是做“埋点”，比如在不修改原有代码的情况下，我们可以 hook 掉所有 `UIViewController` 的 `viewWillAppear:` 方法，在里面加入我们自己的统计代码，实现对所有页面展示的全局监控。这是一种 AOP（面向切面编程）思想的体现。
-
 2.  **动态添加属性 (Associated Objects)**：我们都知道 Category 不能直接添加实例变量，但借助 Runtime 的关联对象技术，我们就可以在运行时为一个已有的类“附加”上新的属性，极大地扩展了 Category 的能力。
-
-3.  **字典转模型**：像 `YYModel`、`Mantle` 这些第三方库，它们之所以能自动把 JSON 字典转换成数据模型，核心原理就是利用 Runtime 遍历一个模型类的所有属性名，然后根据属性名作为 Key 去字典里取值，再动态地赋给模型的属性。
-
-好的，我们来把“方法交换”（Method Swizzling）这个概念彻底拆解清楚。这绝对是面试中考察 Runtime 理解度的头号问题。
-
-我会用一个非常形象的比喻，然后一步步带你完成代码实现，让你不仅“懂”，还能“会用”。
 
 ---
 
@@ -1048,6 +1000,7 @@ NSThread *thread = [[NSThread alloc] initWithBlock:^{
 *   我们新增一个方法：`my_viewWillAppear:` -> 指向 -> **我们新增的带统计功能的代码**
 
 **交换后：**
+
 *   `viewWillAppear:` -> 指向 -> **我们新增的带统计功能的代码**
 *   `my_viewWillAppear:` -> 指向 -> **原始的实现代码**
 
@@ -1404,7 +1357,6 @@ graph TD
     
     *   编译后的**函数和方法的机器指令**。
     
-    
 
 ### 总结与示例
 
@@ -1492,7 +1444,7 @@ NSString *initializedGlobalString = @"Global"; // 已初始化，存放在数据
 
 3.  **谁在调用这个方法**：调用者是**动态生成的 setter 方法**。因此，`automaticallyNotifiesObserversForKey:` 成为了这个动态 setter 内部逻辑的一个关键控制阀。
 
-## gcd和nsthread
+## gcd的死锁场景
 
 * 一个死锁场景
 
@@ -1590,8 +1542,6 @@ dispatch_async(queue, ^{    // 异步执行 + 串行队列
 
 ## SEL和imp的原理和使用
 
----
-
 ### SEL 的本质：一个 C 字符串（方法名）
 
 正如上一个回答中提到的，`SEL` 的本质是一个在编译时被注册的、唯一的 C 字符串，它代表了一个方法的名字。
@@ -1651,8 +1601,6 @@ Method Swizzling 的本质就是：
 4.  这样，当外界调用 `originalSEL` 时，实际执行的是 `swizzledIMP`；调用 `swizzledSEL` 时，执行的却是 `originalIMP`。
 
 这就像把字典里“苹果”和“香蕉”两个词条的解释内容互换了一下。查的是“苹果”，读到的却是香蕉的解释。这种强大的能力完全建立在 `SEL` 和 `IMP` 的分离之上。
-
-## 为什么必须在主线程中操作UI
 
 ## nsurlsession
 
@@ -2155,8 +2103,6 @@ NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithURL:url
     *   **全局功能注入**: 比如，为所有 `UIViewController` 的 `viewWillAppear:` 方法，都注入一段用于“页面统计”的代码。我们可以创建一个 `UIViewController` 的 `Category`，在 `+load` 方法里，将 `viewWillAppear:` 和我们自己写的 `my_viewWillAppear:` 进行交换。这样，每次系统调用 `viewWillAppear:` 时，实际上会执行到我们的代码，我们在我们的代码里先执行统计，然后再调用原始的实现。
     *   **防止数组越界 Crash**: 我们可以交换 `NSArray` 的 `objectAtIndex:` 方法和我们自己的安全版本，在我们的版本里先检查索引是否越界，如果不越界再调用原始实现。
     *   **调试和日志**: 交换关键方法，在方法调用前后打印日志。
-
-
 
 ## 消息发送机制
 
