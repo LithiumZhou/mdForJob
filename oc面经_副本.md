@@ -238,6 +238,186 @@ for (MyDataModel *model in dataModels) {
 }
 ```
 
+## 想统计所有类中哪些方法耗时最高 怎么统计 oc
+
+好的，这是一个非常典型的iOS性能监控和APM（Application Performance Management）领域的问题。要统计所有OC类中方法的耗时，并且找出最耗时的方法，我们不能手动去给每个方法加代码，那样不现实。
+
+正确的方法是利用Objective-C语言强大的**动态特性**，特别是**方法交换 (Method Swizzling)** 和 **消息转发 (Message Forwarding)**。
+
+核心思想是：**在运行时，用我们自己写的“监控”方法，去替换掉所有我们想监控的原始方法的实现。这样，当原始方法被调用时，会先执行我们的监控代码（记录时间），然后我们再手动调用原始的实现，等原始实现执行完毕后，再次记录时间，计算出差值，就得到了方法的耗时。**
+
+下面我将详细介绍几种实现方案，从简单概念到工业级实现。
+
+---
+
+### **方案一：基于 Method Swizzling 的简单实现（核心概念）**
+
+这是最基础、最核心的技术，面试时必须掌握。它利用 `method_exchangeImplementations` 函数来交换两个方法的IMP（Implementation，指向函数实现的指针）。
+
+**核心步骤：**
+
+1.  **创建一个分类 (Category):** 为 `NSObject` 创建一个分类，因为我们想监控所有继承自 `NSObject` 的类。
+
+2.  **定义一个“钩子”方法:** 在分类中定义一个我们自己的方法，比如 `apm_hooked_method`。这个方法的签名（参数、返回值）必须与我们想要hook的方法完全一样，但这在监控所有方法时很难做到。所以，一个更通用的方法是hook `forwardInvocation:`。但我们先从简单的开始，假设我们只hook无参方法。
+
+3.  **在 `+load` 方法中执行交换:** `+load` 方法在类被加载到内存时会自动调用，是执行方法交换最安全、最合适的时机。
+
+**示例代码 (仅用于演示hook一个特定方法，比如 `viewDidLoad`):**
+
+```objectivec
+// UIViewController+APM.m
+#import <objc/runtime.h>
+
+@implementation UIViewController (APM)
+
++ (void)load {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        // 获取原始方法
+        SEL originalSelector = @selector(viewDidLoad);
+        Method originalMethod = class_getInstanceMethod(self, originalSelector);
+
+        // 获取我们自己的钩子方法
+        SEL swizzledSelector = @selector(apm_viewDidLoad);
+        Method swizzledMethod = class_getInstanceMethod(self, swizzledSelector);
+
+        // 交换两个方法的实现
+        method_exchangeImplementations(originalMethod, swizzledMethod);
+    });
+}
+
+- (void)apm_viewDidLoad {
+    // 1. 记录开始时间
+    CFAbsoluteTime startTime = CFAbsoluteTimeGetCurrent();
+
+    // 2. 调用原始实现
+    // 因为方法实现已经被交换了，所以这里调用 apm_viewDidLoad 实际上是在调用原始的 viewDidLoad
+    [self apm_viewDidLoad]; 
+
+    // 3. 记录结束时间并计算耗时
+    CFAbsoluteTime endTime = CFAbsoluteTimeGetCurrent();
+    NSTimeInterval cost = (endTime - startTime) * 1000.0; // 转换为毫秒
+
+    // 4. 上报或打印耗时
+    // 注意：这里不能打印 self，可能会导致死循环。打印 className 和方法名。
+    NSLog(@"-[%@ %@] cost: %.2f ms", NSStringFromClass([self class]), @"viewDidLoad", cost);
+}
+
+@end
+```
+**这种方法的局限性：**
+*   **无法通用：** 你不可能为成千上万个不同的方法签名都写一个对应的 `apm_` 方法。
+*   **粒度太粗：** `+load` 里只能交换当前类的方法，无法遍历所有类。
+
+---
+
+### **方案二：基于消息转发 (Message Forwarding) 的通用方案（工业级思路）**
+
+要实现**“统计所有类中所有方法”**这个宏伟目标，我们需要更强大的武器——**消息转发机制**。
+
+当一个对象收到一个它无法响应的消息时（即找不到对应的方法实现），OC的运行时会启动一套消息转发流程，给我们三次机会来“拯救”这次调用。我们可以在这个流程中做手脚。
+
+**核心思想：**
+我们故意用一个**统一的、不存在的函数指针 `_objc_msgForward`** 去替换掉所有想监控的方法的IMP。这样，当这些方法被调用时，就会因为找不到实现而触发消息转发。然后我们再实现 `forwardInvocation:` 方法，在这个方法里“接住”所有调用，进行耗时统计。
+
+**实现步骤：**
+
+1.  **遍历所有类和方法:**
+    *   在合适的时机（比如 `main` 函数执行前，或通过 `+load`），我们需要获取运行时中**所有已注册的类**。
+    *   对于每一个类，遍历它的**方法列表** (`method list`)。
+
+2.  **替换IMP为 `_objc_msgForward`:**
+    *   对于遍历到的每一个方法，我们保存它原始的IMP。
+    *   然后，使用 `method_setImplementation` 将它的IMP，替换为 `_objc_msgForward` 的IMP。这个特殊的IMP是OC消息转发机制的入口点。
+    *   **注意：** 对于返回结构体的方法，需要使用 `_objc_msgForward_stret`。
+
+3.  **实现 `forwardInvocation:`:**
+    *   我们通过方法交换，将所有类的 `forwardInvocation:` 方法都替换为我们自己的 `apm_forwardInvocation:`。
+    *   在 `apm_forwardInvocation:` 中，我们就能拿到一个 `NSInvocation` 对象，这个对象包含了这次方法调用的**所有信息**：目标对象 (`target`)、方法选择器 (`selector`)、所有参数。
+
+**伪代码逻辑：**
+
+```objectivec
+// 在一个集中的APM管理类中
+
+- (void)startMonitoring {
+    // 1. 获取所有类
+    int numClasses;
+    Class *classes = objc_copyClassList(&numClasses);
+
+    for (int i = 0; i < numClasses; i++) {
+        Class currentClass = classes[i];
+
+        // 过滤掉我们不关心的类（比如系统私有类）
+        if (![self shouldMonitorClass:currentClass]) continue;
+
+        // 2. 遍历这个类的所有方法
+        unsigned int numMethods;
+        Method *methods = class_copyMethodList(currentClass, &numMethods);
+
+        for (int j = 0; j < numMethods; j++) {
+            Method method = methods[j];
+            SEL selector = method_getName(method);
+
+            // 过滤掉我们不关心的系统方法（如 getter/setter）
+            if (![self shouldMonitorSelector:selector]) continue;
+
+            // 3. 保存原始IMP，并替换为 _objc_msgForward
+            IMP originalIMP = method_getImplementation(method);
+            // 将 (Class, SEL) -> IMP 的映射关系保存到一个全局字典里
+            [self saveOriginalIMP:originalIMP forClass:currentClass selector:selector];
+
+            // 获取 _objc_msgForward 的实现
+            IMP msgForwardIMP = _objc_msgForward; 
+            
+            // 替换！
+            class_replaceMethod(currentClass, selector, msgForwardIMP, method_getTypeEncoding(method));
+        }
+        free(methods);
+        
+        // 4. 交换 forwardInvocation:
+        [self swizzleForwardInvocationForClass:currentClass];
+    }
+    free(classes);
+}
+
+// 替换后的 forwardInvocation: 实现
+- (void)apm_forwardInvocation:(NSInvocation *)invocation {
+    CFAbsoluteTime startTime = CFAbsoluteTimeGetCurrent();
+
+    // 从我们保存的全局字典里，找到这个方法原始的 IMP
+    IMP originalIMP = [self getOriginalIMPForClass:[self class] selector:invocation.selector];
+    
+    if (originalIMP) {
+        // 将 invocation 的 selector 临时改成一个别名，防止死循环
+        SEL aliasSelector = [self aliasSelectorForSelector:invocation.selector];
+        // 确保类能响应这个别名，并将实现指向原始 IMP
+        class_addMethod([self class], aliasSelector, originalIMP, ...);
+        invocation.selector = aliasSelector;
+        
+        // 调用原始实现
+        [invocation invoke];
+    }
+
+    CFAbsoluteTime endTime = CFAbsoluteTimeGetCurrent();
+    NSTimeInterval cost = (endTime - startTime) * 1000.0;
+    
+    // 上报耗时和方法信息
+    if (cost > THRESHOLD) { // 只上报超过阈值的耗时
+        [self reportCost:cost forClass:[self class] selector:invocation.selector];
+    }
+}
+```
+
+**这种方案的优点：**
+*   **非常通用：** 可以监控任何类、任何方法的调用，无需关心其参数和返回值类型。
+*   **信息全面：** `NSInvocation` 提供了关于方法调用的所有元信息。
+*   **集中处理：** 所有的耗时统计逻辑都集中在 `apm_forwardInvocation:` 中，易于管理。
+
+**缺点：**
+*   **性能开销大：** 消息转发本身的开销就比直接的方法调用要大。对所有方法都进行hook，会显著影响App的整体性能，尤其是在频繁调用的方法上。
+*   **实现复杂：** 需要处理很多边界情况，比如结构体返回值、与系统其他hook的冲突、多线程安全等。
+
 ## 聊聊property
 
 一种语法糖
@@ -1060,8 +1240,6 @@ Cocoa Touch 框架为我们预定义了几种常见的 `Mode`：
 
 在 iOS 或 macOS 上，如果你想**让子线程保活**，通常用的是 **RunLoop**，因为普通子线程在任务执行完后会直接退出。
 
-------
-
 ### ✅ **为什么子线程会退出？**
 
 - 子线程默认没有 RunLoop。
@@ -1236,6 +1414,15 @@ NSThread *thread = [[NSThread alloc] initWithBlock:^{
 
 现在，你项目里任何一个 `UIViewController`（或其子类）在即将显示时，控制台都会自动打印出一条日志，而你没有动过任何业务代码！
 
+### 2. 能做什么（常见功能）
+
+- **消息机制**：调用方法实际上是给对象发送消息。
+- **动态特性**：
+  - 动态添加方法（`class_addMethod`）。
+  - 方法交换（Method Swizzling）。
+  - 动态解析未实现的方法。
+- **KVC/KVO**：底层依赖 runtime 实现。
+
 ## kvo和kvc
 
 ### KVO 原理深入解析：动态子类与 isa-swizzling
@@ -1254,16 +1441,7 @@ KVO（Key-Value Observing），即键值观察，是 Objective-C 中一种强大
     *   在调用原始的 `setter` 方法之后，再调用 `didChangeValueForKey:` 方法，通知系统该属性已经发生变化。
 4.  **触发观察者方法**：`didChangeValueForKey:` 方法的内部实现会负责调用观察者的 `observeValueForKeyPath:ofObject:change:context:` 方法，从而将属性变更的通知传递给观察者。
 
-#### KVO 与 KVC 的关系
-
-KVO 与 KVC (Key-Value Coding) 紧密相关。为了触发 KVO，必须通过 KVC 的方式来修改属性值，即使用 `setValue:forKey:` 方法或者直接调用属性的 `setter` 方法。如果直接修改实例变量（例如 `_age = 25;`），将不会触发 KVO。
-
-#### 使用注意事项
-
-*   **只能观察对象属性**：KVO 只能用于监听对象属性的变化，而不能监听成员变量或方法。
-*   **移除观察者**：必须在观察者被销毁前，调用 `removeObserver:forKeyPath:` 方法移除观察。否则，当被观察对象继续发送通知时，程序会因为向一个不存在的对象发送消息而崩溃。
-
-### KVC 原理
+**KVC 原理**
 
 KVC（Key-Value Coding），即键值编码，是 Objective-C 提供的一种机制，允许开发者通过字符串（键）来间接访问对象的属性，而无需调用明确的存取方法（getter/setter）。这种动态的访问能力是构建在 Objective-C 的运行时特性之上的。
 
@@ -1338,27 +1516,9 @@ Person *person = [[Person alloc] init];
 这个 `person` 对象在内存中的结构非常简单，它基本上就是：
 
 1.  **一个 `isa` 指针**
-2.  **所有成员变量（Instance Variables, or ivars）的值**
+2.  **所有成员变量（的值**
 
-#### 内存分布图：
-
-`person` 对象在内存中看起来像这样一块连续的区域：
-
-| 内存地址 | 内容                     | 描述                                           |
-| -------- | ------------------------ | ---------------------------------------------- |
-| `0x1000` | `isa` 指针               | 指向 `Person` 这个**类对象 (Class Object)**    |
-| `0x1008` | 指向 `NSObject` 的 `isa` | (继承自父类的成员变量) - NSObject 只有一个 isa |
-| `0x1010` | `_name` (一个指针)       | 指向一个 `NSString` 对象                       |
-| `0x1018` | `_age` (一个整型)        | 存储整数值，例如 `0`                           |
-
-**核心要点**：
-*   **`isa` 指针是关键**：它是每个 Objective-C 对象的第一个成员。`isa` 的意思是 "is a"，它告诉运行时系统（Runtime）：“我**是**一个 `Person` 类的实例”。运行时通过这个指针可以找到对象所属的类，从而找到它的方法列表等信息。
-*   **只存储数据**：实例对象本身**不存储方法**。它只存储自己独有的数据（成员变量）。所有 `Person` 实例的方法定义都存储在 `Person` 类对象中，这样可以节省大量内存。
-*   **继承关系**：成员变量的布局遵循继承链，父类的成员变量在前，子类的在后。
-
----
-
-### Part 2: 类对象 (Class Object) 的内部结构
+### Part 2: 类对象  的内部结构
 
 `isa` 指针指向的是一个**类对象**。在 Objective-C 中，**类本身也是一个对象**。`Person` 这个类，在内存中也存在一个唯一的、类型为 `Class` 的对象。
 
@@ -1366,33 +1526,14 @@ Person *person = [[Person alloc] init];
 
 1.  **`isa` 指针**: 是的，类对象自己也有一个 `isa` 指针。它指向这个类的**元类（Metaclass）**。
 2.  **`superclass` 指针**: 指向其父类的**类对象**。例如，`Person` 的 `superclass` 指针就指向 `NSObject` 的类对象。这个指针构成了继承链。
-3.  **方法缓存 (`cache_t`)**: 一个为了性能优化的缓存。当一个方法被调用后，其指针和选择器（selector）会被缓存到这里，下次再调用同一个方法时，运行时可以直接从缓存中查找，速度极快。
-4.  **类信息 (`class_data_bits_t`)**: 这是一个包含了几乎所有核心信息的复杂结构。通过它可以访问到一个 `class_ro_t` (Read-Only) 的结构体，里面存储了类的“只读”信息，包括：
+3.  **方法缓存 **: 一个为了性能优化的缓存。当一个方法被调用后，其指针和选择器（selector）会被缓存到这里，下次再调用同一个方法时，运行时可以直接从缓存中查找，速度极快。
+4.  **类信息 **: 这是一个包含了几乎所有核心信息的复杂结构。通过它可以访问到一个 `class_ro_t` (Read-Only) 的结构体，里面存储了类的“只读”信息，包括：
     *   **实例变量列表 (`ivar_list_t`)**: 描述了这个类的所有成员变量的名称、类型、内存偏移量等。
     *   **实例方法列表 (`method_list_t`)**: **这是最重要的部分**，它存储了这个类的所有**实例方法**（减号 `-` 方法）的实现（IMP）、选择器（SEL）和类型编码。
     *   **属性列表 (`property_list_t`)**: `@property` 声明的属性信息。
     *   **协议列表 (`protocol_list_t`)**: 这个类遵守的所有协议。
 
-#### 内存分布示意图：
 
-`Person` 的类对象在内存中大致如下：
-
-| 字段名       | 内容                                           | 描述                                                         |
-| ------------ | ---------------------------------------------- | ------------------------------------------------------------ |
-| `isa`        | 指针，指向 `Person` 的**元类对象 (Metaclass)** | 告诉运行时：“我是一个类”                                     |
-| `superclass` | 指针，指向 `NSObject` 的**类对象**             | 用于在找不到方法时，沿着继承链向上查找                       |
-| `cache`      | `cache_t` 结构体                               | 缓存调用过的方法，提升性能                                   |
-| `bits`       | `class_data_bits_t` 指针                       | 指向一个复杂的结构，里面包含了方法列表、属性列表等核心“蓝图”信息 |
-
-**当你调用一个实例方法时**，比如 `[person someInstanceMethod]`，运行时的执行流程是：
-1.  通过 `person` 对象的 `isa` 指针找到 `Person` 类对象。
-2.  在 `Person` 类对象的 `cache` 中查找 `someInstanceMethod`。
-3.  如果缓存命中，直接执行。
-4.  如果缓存未命中，就在 `Person` 类对象的方法列表 (`method_list_t`) 中查找。
-5.  如果找到，执行并将其加入缓存。
-6.  如果还没找到，就通过 `superclass` 指针去父类 `NSObject` 的类对象中重复上述查找过程，直到找到或者到达继承链的顶端（`nil`）为止。
-
----
 
 ### Part 3: 元类对象 (Metaclass Object)
 
@@ -1416,59 +1557,10 @@ Objective-C 的设计哲学是“一切皆对象”，消息发送是其核心�
 3.  **元类对象**的 `isa` 指向根元类（通常是 `NSObject` 的元类）。
 4.  根元类的 `isa` 最终指向它自己，形成一个闭环。
 
-#### 完整的 `isa` 和 `superclass` 指向图：
-
-这张图是理解 Objective-C 对象模型的关键：
-
-```objc
-graph TD
-    subgraph 对象层
-        A[Person 实例 person] -- isa --> B[Person 类对象];
-    end
-
-    subgraph 类层
-        B -- isa --> C[Person 元类对象];
-        B -- superclass --> D[NSObject 类对象];
-    end
-
-    subgraph 元类层
-        C -- isa --> E[NSObject 元类 (根元类)];
-        C -- superclass --> D_Meta[NSObject 元类 (根元类)];
-        D -- isa --> E;
-        D_Meta -- isa --> E
-    end
-    
-    subgraph 根对象层
-        D -- superclass --> F[nil];
-        E -- superclass --> D;
-    end
-```
 *   **`isa` 链 (纵向)**: `实例` -> `类` -> `元类` -> `根元类`。这条链用于**消息发送**时查找方法的实现。调用实例方法时，从“类”开始找；调用类方法时，从“元类”开始找。
 *   **`superclass` 链 (横向)**: `子类` -> `父类` -> `NSObject` -> `nil`。这条链用于**继承**。当在本类的方法列表中找不到方法时，会沿着这条链向上查找。
 
-### 总结
-
-*   **实例对象 (Instance)**: 内存中只包含 `isa` 指针和成员变量。它是具体的数据载体。
-*   **类对象 (Class)**: 内存中包含 `isa`, `superclass`, `cache`, 以及方法/属性/协议列表。它是实例对象的“蓝图”，主要存储**实例方法**。
-*   **元类对象 (Metaclass)**: 结构与类对象类似，它是类对象的“蓝图”，主要存储**类方法**。
-
-这个精巧的设计使得 Objective-C 能够用一套统一的消息发送机制来处理实例方法和类方法，并高效地实现了面向对象的继承和多态特性。
-
 ## oc内存区域
-
-好的，这是一个关于 Objective-C 程序运行基础的经典问题。一个 Objective-C 程序在运行时，其内存空间主要被划分为五个核心区域。了解这些区域的用途和特性，对于理解变量生命周期、内存管理（ARC/MRC）以及程序性能至关重要。
-
-这五个内存区域通常被称为“五大区”：
-
-1.  **栈区 (Stack)**
-2.  **堆区 (Heap)**
-3.  **全局/静态存储区 (Static/Global Storage Area)**
-4.  **常量存储区 (Constant Storage Area)**
-5.  **代码区 (Code/Text Section)**
-
-下面我们来详细解析每一个区域。
-
----
 
 ### 1. 栈区 (Stack)
 
@@ -1552,8 +1644,6 @@ NSString *initializedGlobalString = @"Global"; // 已初始化，存放在数据
 
 ## 一个class不想他的某个属性被观察怎么办？
 
-### `automaticallyNotifiesObserversForKey:` 阻止 KVO 的原理：中断“自动通知”的入口
-
 要理解为什么重写 `automaticallyNotifiesObserversForKey:` 能阻止 KVO，我们需要深入到 KVO 实现的核心环节。其原理在于，这个方法是 KVO **自动通知机制的“总开关”或“决策点”**。
 
 我们回顾一下 KVO 的标准流程：
@@ -1593,18 +1683,6 @@ NSString *initializedGlobalString = @"Global"; // 已初始化，存放在数据
     }
 }
 ```
-
-#### 原理解析
-
-从上面的伪代码中可以清晰地看到：
-
-1.  **前置检查**：在动态生成的 setter 方法内部，系统做的第一件事**不是**立即调用 `willChangeValueForKey:`，而是先调用 `[self class] automaticallyNotifiesObserversForKey:key]` 来进行一次询问。
-
-2.  **条件分支**：
-    *   **如果返回 `YES`** (默认情况): 程序会继续执行 `if` 语句块中的代码，即依次调用 `willChangeValueForKey:`、父类的原始 setter 和 `didChangeValueForKey:`。这构成了完整的 KVO 通知流程，观察者最终会收到通知。
-    *   **如果返回 `NO`** (我们重写后的情况): `if` 条件不满足，`willChangeValueForKey:` 和 `didChangeValueForKey:` 这两个关键的通知方法将**完全被跳过**。程序只会执行中间调用父类 setter 的那部分代码，也就是只完成了属性值的修改，但没有任何通知机制被触发。
-
-3.  **谁在调用这个方法**：调用者是**动态生成的 setter 方法**。因此，`automaticallyNotifiesObserversForKey:` 成为了这个动态 setter 内部逻辑的一个关键控制阀。
 
 ## gcd的死锁场景
 
@@ -1697,17 +1775,6 @@ dispatch_async(queue, ^{    // 异步执行 + 串行队列
 3.  **需要控制并发数量时**：比如，创建一个最大并发数为 3 的网络请求队列，以避免同时对服务器发起过多请求。
 4.  **需要重用和封装任务逻辑时**：你可以创建 `NSOperation` 的子类，将复杂的任务逻辑（包括状态管理）封装在内部，使其成为一个可重用的组件。
 
-### 总结
-
-|                | GCD                                               | NSOperation                        |
-| :------------- | :------------------------------------------------ | :--------------------------------- |
-| **定位**       | 轻量级的任务调度器                                | 功能强大的任务管理器               |
-| **优势**       | **简单、快速、轻量**                              | **功能全面、可控性强、面向对象**   |
-| **核心卖点**   | 性能、`dispatch_group`, `dispatch_barrier`        | **依赖关系、状态控制、并发数控制** |
-| **一句话总结** | **“Fire and Forget”** (扔出去就不管了) 的简单任务 | 需要精细化管理的**复杂工作流**     |
-
-在实际开发中，两者经常会结合使用。大部分简单的后台任务和 UI 更新，用 GCD 就足够了。而对于复杂的、业务逻辑性强的多线程场景，比如网络层、数据处理层，`NSOperation` 往往是更优雅、更健壮的选择。
-
 ## 通知中心的实现原理
 
 ```objective-c
@@ -1722,7 +1789,7 @@ dispatch_async(queue, ^{    // 异步执行 + 串行队列
 	 // 发通知 
    [center postNotificationName:@"UserDidLoginNotification" 
                           object:self 
-                        userInfo:userInfo];
+                        userInfo:userInfo]; //一个字典
 ```
 
 **目录一：按“通知名”索引 (最常用)**
@@ -1773,7 +1840,7 @@ dispatch_async(queue, ^{    // 异步执行 + 串行队列
 
 ### IMP 的本质：一个函数指针
 
-这是问题的关键。**`IMP` 的本质是一个指向方法具体实现的函数指针 (Function Pointer)**。
+这是问题的关键。**`IMP` 的本质是一个指向方法具体实现的函数指针 **。
 
 *   **类型**: `typedef id (*IMP)(id, SEL, ...);`
 
@@ -1933,7 +2000,7 @@ NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithURL:url
 
 ## 可变数组原理
 
-类似java的arraylist，动态数组底层，满了就扩容两倍--》创建一个新的两倍容量的数组 把内容拷贝过去
+类似java的arraylist，动态数组底层，满了就扩容两倍，创建一个新的两倍容量的数组 把内容拷贝过去
 
 ## block和delegate如何使用
 
@@ -2847,70 +2914,6 @@ objc_msgSend(receiver, selector, arg1, arg2, ...);
 
 ## ios怎么实现单例模式
 
-### 1. 什么时候会触发 `+initialize`
-
-Objective-C 里 `+initialize` 的触发条件是：
-
-- **第一次**向这个类发送消息（任何类方法或实例方法），都会先调用一次 `+initialize`。
-
-- 调用 `sharedInstance` 只是其中一个触发点。比如：
-
-  ```objc
-  [MyManager class]; // 也会触发 +initialize
-  [MyManager new];   // 也会触发 +initialize
-  [MyManager someOtherClassMethod]; // 也会触发 +initialize
-  ```
-
-👉 所以，只要这个类被动过，`+initialize` 就会执行。并不是说一定要等到 `sharedInstance` 才会执行。
-
-------
-
-### 2. 饿汉 vs 懒汉 的区别
-
-- **饿汉式**：类加载（或第一次使用类）时，就会初始化单例对象。
-
-  - 在你的代码里，`+initialize` 被调用时，单例就直接建好了。
-  - 即使你从来没调用过 `sharedInstance`，只要你用过这个类，单例就已经存在。
-
-- **懒汉式**：只有第一次调用 `sharedInstance` 的时候才会创建对象。
-
-  - 通常写法是 `dispatch_once`：
-
-    ```objc
-    + (instancetype)sharedInstance {
-        static MyManager *instance = nil;
-        static dispatch_once_t onceToken;
-        dispatch_once(&onceToken, ^{
-            instance = [[self alloc] init];
-        });
-        return instance;
-    }
-    ```
-
-------
-
-### 3. 为什么你的写法算“饿汉”
-
-因为它的创建动作放在 `+initialize`，而不是放在 `sharedInstance` 内部。
- 也就是说：
-
-- **类一旦被动过**（无论是不是 `sharedInstance`），就会触发 `+initialize` → 创建 `instance`。
-- 这跟懒汉式“只有在第一次 `sharedInstance` 时才去 new”不一样。
-
-所以严格来说：
- 👉 你的写法 **属于饿汉式**，只是它的“饿”不是在程序启动时马上执行，而是在“第一次接触这个类的时候”就执行。
-
-------
-
-### 4. 举个例子
-
-```objc
-[MyManager class];   // 还没调用 sharedInstance
-```
-
-这行代码本身不会调用 `sharedInstance`，但是会触发 `+initialize`，于是单例就被创建了。
- 这证明它不是严格的懒汉。
-
 ### 🔹 懒汉式单例（第一次使用时才创建实例）
 
 ### 特点
@@ -3012,10 +3015,6 @@ static MyManager *instance = nil;
         *   **方法列表的合并**: 这不是简单的替换，而是将 `Category` 的方法列表**插入**到原始类的方法列表的**最前面**。
         *   **这就是为什么 `Category` 的方法会“覆盖”原始类方法**：当进行方法查找（消息发送）时，运行时会遍历一个类的方法列表。由于 `Category` 的方法被加在了最前面，所以它会**先被找到并执行**。
 
-**一个重要的细节**:
-*   这个“附加”的过程，是在 App 启动时，`main()` 函数执行之前，由 `dyld`（动态链接器）和运行时协作完成的。
-*   这个过程是**一次性的**。一旦附加完成，`Category` 中的方法就成了这个类“固有”的一部分，从外部看，无法区分一个方法是来自原始类还是来自 `Category`。
-
 ---
 
 ### 三、`Category` 与 `+load` 和 `+initialize` 的关系
@@ -3070,7 +3069,6 @@ GCD 提供了几种不同类型的队列：
         ```objectivec
         dispatch_queue_t mySerialQueue = dispatch_queue_create("com.example.mySerialQueue", DISPATCH_QUEUE_SERIAL);
         ```
-        或者，第二个参数传 `NULL` 也是默认创建串行队列。
     *   **创建并发队列:**
         ```objectivec
         dispatch_queue_t myConcurrentQueue = dispatch_queue_create("com.example.myConcurrentQueue", DISPATCH_QUEUE_CONCURRENT);
@@ -3804,21 +3802,6 @@ static StripedMap<SideTable> SideTables;
     c. 在 `SideTable` 中找到该对象的引用计数值，并对其进行增减。
     d. 这个过程涉及查哈希表和加锁，因此比直接操作 `isa` 要慢。
 
-#### Side Table 与弱引用 (`weak`)
-
-`SideTable` 的另一个重要职责是管理弱引用。
-
-当一个对象被 `weak` 指针指向时，运行时会在 `weak_table` 中记录下“哪个对象 (`key`) 被哪些 `weak` 指针 (`value`, 指针的地址列表) 指向了”。
-
-当这个对象的引用计数变为 0 并开始 `dealloc` 时，运行时会：
-1.  根据对象地址去 `SideTable` 的 `weak_table` 中查找。
-2.  遍历所有指向它的 `weak` 指针。
-3.  将这些 `weak` 指针的值自动设置为 `nil`。
-
-这就是 `weak` 能在对象释放后自动变 `nil` 的底层原理。
-
----
-
 ### 特殊情况：Tagged Pointer
 
 对于一些小对象，比如特定数值的 `NSNumber`、短的 `NSString` 等，苹果使用了 **Tagged Pointer** 技术。
@@ -3828,8 +3811,6 @@ static StripedMap<SideTable> SideTables;
 *   **引用计数：** **Tagged Pointer 对象没有引用计数**。它们不存储在堆上，其生命周期管理方式更像栈上的基本数据类型。对它进行 `retain` 和 `release` 操作实际上是空操作 (no-op)。当你把它赋值给另一个变量时，仅仅是指针值（也就是数据本身）的拷贝。
 
 ## 从32b到64b的指针，苹果做了什么
-
-这是一个绝佳的问题，它揭示了苹果在软件工程和系统优化方面的深厚功力。从 32 位到 64 位的迁移，苹果所做的**远不止是把指针从 4 字节扩展到 8 字节**那么简单。他们将这次架构升级视为一个巨大的契机，对 Objective-C 的底层运行时（Runtime）进行了根本性的重塑，从而带来了惊人的性能提升和内存效率优化。
 
 核心思想是：**一个 64 位的指针拥有巨大的地址空间（2^64），但实际上当前硬件和操作系统远用不了这么多地址位。那么，这些“多余”的、未被使用的比特位就是宝贵的资源，可以用来存储额外的信息。**
 
@@ -3870,13 +3851,6 @@ static StripedMap<SideTable> SideTables;
 **【问题】**
 在 32 位时代，每个对象的第一个成员变量 `isa` 是一个纯粹的指针，仅仅指向该对象所属的 `Class`（类对象）。而对象的其他状态，比如引用计数，则需要额外的存储空间（或者像之前讨论的，存储在全局的 Side Table 中）。
 
-**【64位解决方案：Non-Pointer ISA】**
-苹果工程师再次利用了 64 位指针的“奢侈空间”。他们将 `isa` 指针从一个单纯的“地址指针”变成了一个包含丰富信息的“位域集合体 (Bitfield)”。
-
-**做法是：**
-
-`isa` 指针的 64 个比特位被精细地划分，分别用来存储不同的信息，就像一个飞机的仪表盘。
-
 ```c
 // 简化的 arm64 架构下的 isa 位域结构
 struct {
@@ -3889,26 +3863,15 @@ struct {
     uintptr_t deallocating      : 1;  // 是否正在 dealloc
     uintptr_t has_sidetable_rc  : 1;  // 引用计数是否已“溢出”到 Side Table
     uintptr_t extra_rc          : 19; // 【核心】直接存储的引用计数值
-};
+};**
 ```
-
-**带来的巨大优势：**
 
 *   **极速的引用计数：**
     *   **快速路径：** 对于绝大多数对象，其引用计数（`extra_rc`，19位足够表示50多万次引用）可以直接在 `isa` 内部通过原子操作进行增减。这比去查找并锁定一个全局的哈希表（Side Table）要快几个数量级。
     *   **慢速路径：** 只有当 `extra_rc` 溢出，或者对象有了弱引用时，才会启用 `has_sidetable_rc` 标志，并将完整的引用计数存入 Side Table。这保证了常见情况下的极致性能。
 *   **对象状态信息聚合：** 无需额外查询，通过 `isa` 就能快速判断一个对象是否有弱引用、是否有关联对象等，加快了运行时的判断速度。
-*   **节省内存：** 对于没有溢出的对象，它的引用计数信息是“免费”存储在 `isa` 指针里的，不需要额外的内存。
 
 ## nsstring生命周期的管理
-
-好的，`NSString` 的生命周期管理是 Objective-C 内存管理中的一个核心且非常有趣的话题。它不像普通 `NSObject` 那样简单，因为苹果为了极致的性能优化，在底层对不同类型的字符串做了不同的处理。
-
-理解 `NSString` 的生命周期，关键在于要认识到**你遇到的 `NSString` 对象并非只有一种**。它们根据创建方式和内容的不同，在内存中的存储位置和管理方式也完全不同。
-
-在现代 Objective-C 开发中，我们都使用 **ARC (Automatic Reference Counting)**，所以我们主要在 ARC 的背景下讨论。
-
----
 
 ### `NSString` 的三种主要类型及其生命周期
 
@@ -4026,23 +3989,7 @@ NSLog(@"Changed name: %@", obj.wrongName); // 输出: Changed name: Alice Smith
 }
 ```
 
-这样，无论你传进来的是 `NSString` 还是 `NSMutableString`，`name` 属性最终持有的都将是一个**不可变的、与外部对象无关**的副本，从而保证了数据的安全性和稳定性。
-
----
-
-### 总结
-
-| 字符串类型                  | 内存位置     | 生命周期管理            | 关键点                                   |
-| :-------------------------- | :----------- | :---------------------- | :--------------------------------------- |
-| **`__NSCFConstantString`**  | 数据段       | 静态，与 App 同生共死   | `@"..."` 字面量，无 ARC 管理             |
-| **`NSTaggedPointerString`** | 指针变量自身 | 栈生命周期              | 64 位环境下的短字符串优化，无 ARC 管理   |
-| **堆分配的 `NSString`**     | 堆 (Heap)    | **由 ARC 管理引用计数** | 动态创建的长字符串、`NSMutableString` 等 |
-| **`NSMutableString`**       | 堆 (Heap)    | **由 ARC 管理引用计数** | 总是分配在堆上，可变                     |
-
-**最佳实践**:
-1.  **始终使用 `copy` 关键字声明 `NSString` 属性**，以确保其不可变性。
-2.  理解不同字符串的内存模型，有助于你写出更高性能的代码，并在调试时快速定位问题。
-3.  在 ARC 环境下，你只需要关注堆上分配的字符串的生命周期（即强引用和弱引用），其他两种系统已经为你做了最好的优化。
+这样，无论你传进来的是 `NSString` 还是 `NSMutableString`，`name` 属性最终持有的都将是一个**不可变的、与外部对象无关**的副本，从而保证了数据的安全性和稳定性
 
 ## ***事件传递和响应链
 
@@ -4136,13 +4083,6 @@ NSLog(@"Changed name: %@", obj.wrongName); // 输出: Changed name: Alice Smith
     *   `UIWindow` 也将这个对象作为最终结果返回。
 
 至此，整个 Hit-Testing 过程结束。系统确定了**红色按钮 C**是这次触摸事件的最佳响应者（Hit-Test View）。
-
-好的，iOS的事件触摸与传递过程是面试中的一个核心考点。它分为两个主要阶段：
-
-1.  **Hit-Testing (寻找过程)**：系统通过这个阶段来找到最适合响应触摸事件的那个视图（View）。这是一个**从父视图到子视图**的递归查找过程。
-2.  **Responder Chain (响应过程)**：在找到最适合的视图后，事件会沿着**响应者链**传递，让链上的各个响应者对象都有机会处理这个事件。这是一个**从子视图到父视图**的传递过程。
-
-下面我们详细分解这两个过程。
 
 ---
 
@@ -4376,8 +4316,6 @@ Render Server收到了你App发来的“图层树”和所有改动信息。现�
 
 3.  **垂直同步 (VSync)**：这个时机就是屏幕的**垂直同步信号**。你的iPhone屏幕以固定的频率刷新（比如60Hz或120Hz）。每当屏幕准备好刷新下一帧时，就会发出一个VSync信号。
     *   收到信号后，系统会**瞬间交换**前后台缓冲区的指针。后台缓冲区变成新的前台缓冲区，开始显示在屏幕上；而旧的前台缓冲区则变成后台缓冲区，等待GPU绘制下一帧。
-
-至此，从`UIView`的属性修改，到最终像素显示在屏幕上的完整旅程就结束了。
 
 ## 离屏渲染是什么，怎么避免？
 
@@ -7858,6 +7796,15 @@ TCP 通过一个称为“**三次握手 (Three-Way Handshake)**”的过程来�
 ## ***四次挥手里面的各种wait说一下，FIN_WAIT_1和FIN_WAIT_2什么区别
 
 ## ***tcp和udp什么区别
+
+| 特性         | **TCP**                                              | **UDP**                                   |
+| ------------ | ---------------------------------------------------- | ----------------------------------------- |
+| 是否面向连接 | ✅ 面向连接（三次握手、四次挥手）                     | ❌ 无连接                                  |
+| 可靠性       | ✅ 可靠传输（确认应答、重传机制、流量控制、拥塞控制） | ❌ 不保证可靠交付（可能丢包、乱序、重复）  |
+| 数据传输方式 | 字节流（stream），没有固定边界                       | 报文（datagram），一发一收，不合并不拆分  |
+| 传输效率     | 相对较低（有握手、确认、重传等开销）                 | 高效（无握手，无额外控制开销）            |
+| 首部开销     | 20~60 字节                                           | 8 字节                                    |
+| 适合场景     | 对可靠性要求高：HTTP、HTTPS、FTP、SMTP、IMAP         | 对实时性要求高：DNS、VoIP、视频直播、游戏 |
 
 ## ***TCP实现可靠传输的原理
 
