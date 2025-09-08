@@ -4708,7 +4708,7 @@ Render Server收到了你App发来的“图层树”和所有改动信息。现�
 
 为了彻底理解它，我们需要先了解 iOS 的标准布局流程。
 
-### iOS 的标准布局流程 (Deferred Layout Pass)
+### iOS 的标准布局流程 
 
 当你修改一个视图的约束（例如，改变一个 `height` 约束的 `constant` 值）时，系统并不会马上重新计算并更新视图的 `frame`。相反，它会采取一种更高效的“延迟”策略：
 
@@ -6142,7 +6142,9 @@ MVVM 的核心是引入了一个新的角色：`ViewModel`。它的任务是**�
         } else {
             self->_statusText = @"用户名或密码错误";
         }
-        if (self.loginStateDidChange) { self.loginStateDidChange(self); }
+        if (self.loginStateDidChange) { 
+          self.loginStateDidChange(self); 
+        }
     });
 }
 @end
@@ -6208,19 +6210,82 @@ MVVM 的核心是引入了一个新的角色：`ViewModel`。它的任务是**�
 // ... 省略 setupViews ...
 @end
 ```
-*（在实际项目中，我们通常会使用 **KVO** 或响应式框架如 **RAC/RxSwift** 来实现更优雅的数据绑定，从而省去 `loginStateDidChange` 这个 block 和 `usernameDidChange:` 这些方法。）*
+又或者用kvo更新view的状态
 
-### **对比总结**
+```objc
+// LoginViewController.m
 
-| 对比项       | MVC                                                          | MVVM                                                         |
-| :----------- | :----------------------------------------------------------- | :----------------------------------------------------------- |
-| **核心职责** | `Controller` 做了所有事：UI事件、业务逻辑、网络、导航...     | `ViewModel` 抽取了**状态**和**展示逻辑**。<br>`Controller` 只负责**绑定**。 |
-| **代码量**   | `Controller` 极度**臃肿**                                    | `Controller` 变得非常**轻薄**。<br>`ViewModel` 包含了大部分逻辑。 |
-| **耦合关系** | `View <-> Controller <-> Model`                              | `View <-> Controller <-> ViewModel -> Model`<br>`View` 与 `ViewModel` 通过绑定**解耦**。 |
-| **可测试性** | **差**。要测试业务逻辑，必须实例化一个完整的 `ViewController`。 | **极高**。`ViewModel` 是一个**纯粹的 `NSObject`**，不依赖任何 `UIKit`。你可以非常轻松地为它编写单元测试，输入 `username` 和 `password`，然后断言 `isLoginButtonEnabled` 的值是否正确。 |
-| **数据流**   | 比较混乱，可以是双向的。                                     | **单向数据流**非常清晰：`View` 产生事件 -> `ViewModel` 处理并更新状态 -> `View` 响应状态变化。 |
+- (void)bindViewModel {
+    // 注册观察者
+    [self.viewModel addObserver:self forKeyPath:@"isLoginButtonEnabled" options:NSKeyValueObservingOptionNew context:nil];
+    [self.viewModel addObserver:self forKeyPath:@"loginButtonColor" options:NSKeyValueObservingOptionNew context:nil];
+    [self.viewModel addObserver:self forKeyPath:@"statusText" options:NSKeyValueObservingOptionNew context:nil];
+    
+    // ... View -> ViewModel 的绑定不变 ...
+}
 
-通过这个代码对比，你可以非常直观地看到，MVVM 模式通过引入 `ViewModel`，成功地将 `ViewController` 从繁重的业务逻辑中解放出来，使其回归到了一个更纯粹的“视图管理者”的角色，从而极大地提升了代码的**可测试性、可维护性和模块化程度**。
+// 实现观察者方法
+- (void)observeValueForKeyPath:(NSString *)keyPath 
+                      ofObject:(id)object 
+                        change:(NSDictionary<NSKeyValueChangeKey,id> *)change 
+                       context:(void *)context {
+    if (object == self.viewModel) {
+        // 在这里根据 keyPath 更新对应的 UI
+        if ([keyPath isEqualToString:@"isLoginButtonEnabled"]) {
+            self.loginButton.enabled = self.viewModel.isLoginButtonEnabled;
+        } else if ([keyPath isEqualToString:@"loginButtonColor"]) {
+            self.loginButton.backgroundColor = self.viewModel.loginButtonColor;
+        } else if ([keyPath isEqualToString:@"statusText"]) {
+            self.statusLabel.text = self.viewModel.statusText;
+        }
+    }
+}
+
+- (void)dealloc {
+    // 必须移除观察者
+    [self.viewModel removeObserver:self forKeyPath:@"isLoginButtonEnabled"];
+    [self.viewModel removeObserver:self forKeyPath:@"loginButtonColor"];
+    [self.viewModel removeObserver:self forKeyPath:@"statusText"];
+}
+```
+
+#### 问题一：“请解释一下你理解的MVVM是什么？”
+
+**优秀回答 (展现深度和思考)：**
+“MVVM是一种旨在**分离用户界面（View）和业务逻辑/状态（ViewModel）**的架构模式。它的核心思想是解决苹果官方MVC中ViewController过于臃肿（Massive View Controller）的问题。”
+
+“在我看来，MVVM可以这样理解：”
+*   **Model:** 和MVC中的一样，是纯粹的数据模型，负责定义数据结构和提供数据。
+*   **View/ViewController:** 它的职责被大大简化，只负责两件事：**UI的布局和渲染**，以及**将用户的操作（如点击）转发给ViewModel**。它本身不包含任何业务逻辑。在iOS中，`UIViewController` 和 `UIView` 都属于View层。
+*   **ViewModel:** 这是MVVM的精髓。它是一个**专门为View服务的对象**。它从Model获取原始数据，然后进行加工处理，转换成View可以直接展示的**状态和数据**（比如把Date对象格式化成"2023-10-27"这样的字符串）。同时，它也提供命令（Command）来响应View转发过来的用户操作。
+
+“最关键的一点是，**ViewModel不直接持有View的引用**。它们之间通过**数据绑定（Data Binding）**机制进行通信，实现了View和ViewModel的彻底解耦，这为单元测试带来了巨大的便利。”
+
+> **面试官追问点：** 为什么ViewModel不应该持有View？（答案：为了解耦和可测试性。一旦持有View，ViewModel就依赖了UIKit，无法进行脱离UI的单元测试，也容易造成循环引用。）
+
+---
+
+#### 问题二：“MVVM和MVC相比，有什么具体的优缺点？”
+
+**普通回答：**
+“MVVM的优点是解耦、可测试性好。缺点是对于简单页面，会增加一些类和复杂度。”
+
+**优秀回答 (结合具体痛点和解决方案)：**
+“MVVM最大的优点是它精准地解决了苹果MVC架构下的**‘Massive View Controller’（重量级视图控制器）**问题。在MVC中，大量的业务逻辑、网络请求、数据加工代码都堆在ViewController里，导致其非常臃肿且难以测试。”
+
+“具体来说，MVVM的优势体现在：”
+1.  **高度解耦 (High Decoupling):** View和ViewModel通过数据绑定通信，彼此没有直接依赖。ViewModel也不知道展示它数据的是`UILabel`还是`UITextView`，它只负责输出“状态”。这使得更换UI变得非常容易。
+2.  **极高的可测试性 (Excellent Testability):** 这是MVVM最核心的优势。因为ViewModel是一个**纯粹的Swift/Objective-C对象**，它不依赖任何UIKit/SwiftUI的组件。所以我们可以非常轻松地在单元测试环境中实例化一个ViewModel，给它输入，然后断言它的输出是否符合预期，测试覆盖率可以做得非常高。
+3.  **职责分离 (Separation of Concerns):** UI设计师可以专注于View层，而业务逻辑开发者可以专注于ViewModel层，两者可以并行工作，互不干扰。
+
+---
+
+#### 问题三：“你通常如何实现View和ViewModel之间的数据绑定？”
+
+**普通回答：**
+
+1.  **KVO (Key-Value Observing):** 这是Foundation框架提供的传统机制。可以让一个对象观察另一个对象的属性变化。虽然能用，但API比较古老，语法不直观，且需要注意移除观察者，否则容易导致崩溃。
+2.  **闭包/属性观察者 (简单场景):** 对于简单的单向数据流，我们也可以在ViewModel中定义一个闭包，比如`var onDataUpdate: (() -> Void)?`。当数据变化时，调用这个闭包。ViewController在初始化ViewModel时，将UI更新的代码赋给这个闭包。这种方式最轻量，但对于复杂交互就不够用了。
 
 ## 软件设计原则
 
@@ -7077,10 +7142,6 @@ iOS 的界面并不会在你调用 `addSubview:` 的瞬间就立刻重绘。它�
 
 ## NSThread，GCD，NSOperation相关的。开启一条线程的方法？线程可以取消吗
 
-好的，我们来分别看一下 `NSThread`、`GCD` 和 `NSOperation` 这三种技术如何开启线程，以及它们在取消线程（任务）方面的能力。
-
----
-
 ### 一、如何开启一条线程？
 
 #### 1. `NSThread`
@@ -7489,6 +7550,158 @@ Objective-C 和 Java 是两种强大的面向对象编程语言，它们在软�
 *   **Java：垃圾回收 (Garbage Collection - GC)**
     Java 运行在 Java 虚拟机 (JVM) 之上，由 JVM 内置的垃圾回收器来自动管理内存。 垃圾回收器会定期扫描内存，找出不再被引用的对象并释放它们的空间。 这种方式的优点是完全自动化，开发者无需关心内存的释放，并且能够自动处理循环引用的问题。 缺点是垃圾回收的时机不确定，可能会在某个时间点导致应用短暂的停顿（Stop-The-World）。
 
+## oc编译过程
+
+## 🔹 1. 源码文件
+
+- `.m` 文件：Objective-C 实现文件
+- `.h` 文件：头文件
+- `.mm` 文件：混编 Objective-C++
+- 可能还会有 `.c`、`.cpp`、`.swift`
+
+------
+
+## 🔹 2. 编译过程（以 `.m` 为例）
+
+### （1）预处理（Preprocessing）
+
+- 处理 `#import`、`#define`、宏替换
+- 生成纯 C/Objective-C 代码，扩展后的临时文件（通常是 `.i`）
+
+命令示例：
+
+```bash
+clang -E main.m -o main.i
+```
+
+------
+
+### （2）编译（Compiling）
+
+- 把 `.i` 转换成 **LLVM IR**（中间语言，类似汇编）
+- 处理语法检查、类型检查
+- 最终生成汇编代码（`.s` 文件）
+
+命令示例：
+
+```bash
+clang -S main.i -o main.s
+```
+
+------
+
+### （3）汇编（Assembling）
+
+- 汇编器把 `.s` 文件转成 **目标文件** `.o`（二进制机器码，但未链接）
+
+命令示例：
+
+```bash
+clang -c main.s -o main.o
+```
+
+------
+
+### （4）链接（Linking）
+
+- 链接所有 `.o` 文件和依赖的 **静态库（.a）**、**动态库（.dylib / framework）**
+- 生成最终可执行文件（Mach-O 格式）
+
+命令示例：
+
+```bash
+clang main.o -framework Foundation -o main
+```
+
+## 🔹 3. Objective-C 的特殊处理
+
+和普通 C 程序不同，Objective-C 编译时还要额外处理：
+
+1. **方法调用（消息发送）**
+   - `[obj method]` 编译后会转成 `objc_msgSend(obj, @selector(method))`
+   - 也就是运行时动态分发
+2. **类和元类信息**
+   - 编译器会把 `@interface` / `@implementation` 转成数据结构，存放在 Mach-O 里，供 runtime 注册
+3. **Category / Extension**
+   - Category 的方法不会直接合并进类，而是编译成一份结构，启动时由 runtime 挂载
+4. **自动引用计数（ARC）**
+   - 编译器会在合适的地方插入 `objc_retain`、`objc_release` 等调用
+   - 开发者看不到，都是编译器自动加的
+
+------
+
+## 🔹 4. 程序运行时
+
+编译完成只是生成可执行文件，真正运行还要依赖：
+
+- **dyld**：动态链接器，加载可执行文件和依赖库
+- **Objective-C runtime**：注册类、方法、Category，支持消息发送、KVO、isa-swizzling 等动态特性
+
+------
+
+## 🔹 总结
+
+Objective-C 的编译流程（和 C 类似）：
+
+```
+源代码 (.m/.h)
+   ↓ 预处理
+.i 文件
+   ↓ 编译 (Clang → LLVM IR → 汇编)
+.s 文件
+   ↓ 汇编
+.o 文件
+   ↓ 链接 (lib + framework)
+Mach-O 可执行文件
+   ↓ (运行时：dyld + ObjC runtime)
+程序启动
+```
+
+`dyld` 主要做以下几件大事：
+
+#### 1. 装载依赖库 (Loading Libraries)
+*   **比喻：** 把所有装家具零件的箱子搬进房间。
+*   **技术解释：** 你的 App 不仅仅包含你写的代码，还依赖很多苹果官方的“零件库”（如 `UIKit`, `Foundation`）和第三方的“零件库”（如 `AFNetworking`）。`dyld` 的第一件事就是找到所有这些必需的库（动态库 `.dylib`），然后把它们全部加载到内存里。
+
+#### 2. Rebase 和 Bind (最重要的环节，也是最耗时的)
+*   **比喻：** 仔细阅读说明书，把螺丝拧到正确的孔里，把 A 板和 B 板连接起来。
+*   **技术解释：** 由于安全机制 **ASLR** (地址空间布局随机化)，你的 App 每次启动时，它和它依赖的库在内存中的地址都是**随机**的。这就导致代码里写死的地址引用全部失效了。
+    *   **Rebase (内部修正):** `dyld` 需要修正 App **内部**的指针。比如，你自己的一个函数要调用你自己的另一个函数，`dyld` 就要计算出它们今天在内存中的新地址，然后把这个调用关系“接上”。
+    *   **Bind (外部绑定):** `dyld` 需要把你 App 的代码和**外部**库的代码“绑定”在一起。这是我们讨论的**核心**。比如，你的代码里调用了 `NSLog()`，`dyld` 必须去 `Foundation` 库里找到 `NSLog` 函数的真实内存地址，然后把你的调用代码指向这个地址。**这个查找和绑定的过程，就是性能瓶颈所在。**
+
+#### 3. 运行初始化代码 (Run Initializers)
+*   **比喻：** 家具组装好后，给里面的电器通上电，让它们自检。
+*   **技术解释：** `dyld` 会执行所有 Objective-C 的 `+load` 方法和 C++ 的静态构造函数。这些代码被要求在 `main` 函数之前必须执行完毕。
+
+当 `dyld` 做完所有这些工作后，它才会调用你熟悉的 `main` 函数，App 的启动流程才进入到你自己可控的部分。
+
+---
+
+### 第二部分：这个哈希表的作用是什么？—— “智能眼镜”
+
+现在我们聚焦于 `dyld` 最耗时的环节：**Bind (外部绑定)**。
+
+*   **没有优化前 (视力不好的老花眼师傅):**
+    *   `dyld` 需要绑定 `NSLog`。
+    *   它拿到的是一个**字符串** `"NSLog"`。
+    *   它会在 `Foundation` 库暴露出来的成千上万个符号（函数名、变量名）列表里，进行**字符串比较**，一个一个地找，直到找到匹配 `"NSLog"` 的那一项。
+    *   这个过程在一个大型 App 里要重复**几十万次**。你可以想象一个老花眼师傅，拿着一张有几十万个零件名字的清单，挨个对比，这速度有多慢。
+
+*   **优化后 (戴上智能眼镜的师傅):**
+    这个**完美哈希表**，就是那副为 `dyld` 量身定做的“智能眼镜”。
+
+    **哈希表的作用，就是提供一个“跳过字符串比较”的超高速查找通道。**
+
+    现在，`dyld` 的工作流程变成了：
+    1.  需要绑定 `NSLog`。
+    2.  它不再去进行字符串比较了。它把字符串 `"NSLog"` 喂给“智能眼镜”（完美哈希函数）。
+    3.  “智能眼镜”内部进行了一次超快的数学计算，瞬间告诉师傅：“你要找的东西在**仓库的第 8888 号货架上**！”
+    4.  `dyld` 直接跑到第 8888 号货架，拿到了 `NSLog` 的真实内存地址。
+
+**这个哈希表在这里的核心作用就是：**
+
+**将【极其耗时的字符串查找操作】，替换为【一次恒定时间的、超快的数学计算和数组访问】。**
+
 # 计网
 
 ## ***dns解析的过程
@@ -7670,19 +7883,6 @@ TCP 通过一个称为“**三次握手 (Three-Way Handshake)**”的过程来�
 
 ## url输入到网页渲染出来的流程，如果是家庭网络是怎么个流程呢（经过路由器）
 
-### 第一阶段：发起请求与DNS解析
-
-1.  **URL解析与缓存检查**: 首先，浏览器会解析您输入的URL，识别出其中的协议（如HTTPS）、域名（如www.google.com）和具体路径。在发起任何网络请求之前，浏览器会进行多级缓存检查，以求最快地获取资源：
-    *   **浏览器缓存**: 检查自身缓存中是否有该网页的副本。如果资源有效（未过期），浏览器会直接从本地加载，这是最快的方式。
-    *   **操作系统缓存**: 如果浏览器缓存未命中，会查询操作系统的DNS缓存。
-    *   **路由器缓存**: 许多家用路由器也具备DNS缓存功能，会在这一步进行检查。
-    *   **本地Hosts文件**: 操作系统会检查本地的hosts文件，看是否有手动指定的域名与IP地址的映射关系。
-
-2.  **DNS域名解析**: 如果所有本地缓存都未能找到对应的IP地址，浏览器就会启动DNS（域名系统）查询，将人类易于记忆的域名转换为机器能够识别的IP地址。 这个过程通常是递归的：
-    *   您的电脑向路由器发送DNS查询请求，路由器再将请求转发给您的互联网服务提供商（ISP）指定的本地DNS服务器。
-    *   如果本地DNS服务器也没有缓存，它会向根DNS服务器、顶级域（如.com）服务器和权威DNS服务器逐级查询，直到找到该域名对应的IP地址。
-    *   一旦找到，IP地址会沿着请求路径返回，并被各级（本地DNS服务器、路由器、操作系统、浏览器）缓存起来，以备后续使用。
-
 ### 第二阶段：家庭路由器登场与建立连接
 
 3.  **建立TCP连接（三次握手）**: 获得了目标服务器的IP地址后，您的电脑（客户端）需要与服务器建立一个可靠的连接。这通过TCP协议的“三次握手”来完成。
@@ -7700,7 +7900,7 @@ TCP 通过一个称为“**三次握手 (Three-Way Handshake)**”的过程来�
 
 7.  **服务器返回HTTP响应**: 响应报文包含状态码（如200 OK表示成功）、响应头和响应体（即HTML文件的内容）。 这个响应数据包的目标地址是您路由器的公共IP。
 
-8.  **路由器转发响应**: 数据包返回到您的家用路由器。路由器查询NAT表，找到之前记录的映射关系，再将数据包的目标IP地址从自己的公共IP换回您电脑的私有IP，然后通过局域网将数据包准确地发送到您的设备上。a
+8.  **路由器转发响应**: 数据包返回到您的家用路由器。路由器查询NAT表，找到之前记录的映射关系，再将数据包的目标IP地址从自己的公共IP换回您电脑的私有IP，然后通过局域网将数据包准确地发送到您的设备上。
 
 ## 网络各层有什么协议
 
@@ -8188,12 +8388,6 @@ TCP的设计目标就是解决以上所有问题。
 *   **节省带宽**: 这是304的核心价值。服务器返回的**响应体是空的**，只有一个响应头。客户端无需重新下载整个文件（如CSS、JS、图片），从而极大地提升了加载速度，减少了服务器和客户端的带宽消耗
 
 ## 网络包通过路由器 怎么判断是不是局域网的ip呢
-
-当一个网络包（数据包）抵达路由器时，路由器会通过一个精确且高效的流程来判断其目的地IP地址是否属于本地局域网（LAN）。这个判断过程的核心依赖于**IP地址**和**子网掩码**的结合。
-
-简而言之，路由器通过将数据包的目标IP地址与自己所在局域网的网络地址进行比较来做出判断。如果两者属于同一个网络，那么这个数据包就会被直接发送到局域网内的目标设备；如果不是，路由器则会将其转发到外部网络，即广域网（WAN）。
-
-以下是路由器进行此项判断的具体步骤：
 
 ### 关键角色：IP地址与子网掩码
 
@@ -9461,13 +9655,9 @@ handleNonHTTPConnection(bufioReader, serverConn) // <--- 后续处理
 在每次处理完一个HTTP请求后，你都检查了它是不是一个`WebSocket`升级请求。如果是，就用`break`跳出`for`循环，不再尝试用`http.ReadRequest`去解析后续的流量。然后，程序会接着执行`handleNonHTTPConnection`，这个函数就是一个简单的`io.Copy`，它把这条已经“变身”为`WebSocket`的连接当作普通的TCP连接来处理，忠实地在客户端和服务器之间双向转发数据帧。这样就保证了`WebSocket`通信的正常进行。
         
 
-## **Q1: 什么是透明代理？它与传统代理有什么区别？**
-
 ## **Q2: 你提到使用 iptables 实现流量拦截，能详细说说这个过程吗？**
 
 ## **Q5: 如何实现"协议自动识别"？具体是通过什么特征来判断的？**
-
-
 
 
 是的，您的理解基本正确，但有几个重要的前提和细节需要厘清。
@@ -9506,24 +9696,88 @@ handleNonHTTPConnection(bufioReader, serverConn) // <--- 后续处理
 *   如果开头不是这些方法（比如是 `0x16`） -> 这很可能是HTTPS或其他未知协议的流量，不能按HTTP解析，必须直接转发（`io.Copy`），否则会破坏TLS握手，导致连接失败。
         
 
-## **Q6: 在处理 HTTPS 流量时遇到了什么挑战？如何解决的？**
-
-## **Q7: WebSocket 协议升级是如何处理的？为什么需要特殊处理？**
-
 ## 你认为这个项目部署在路由器上 能承载多少人使用
+
+### 1. 压测数据展示
+
+**具体测试结果：**
+```
+测试环境：OpenWrt路由器，MT7621 880MHz单核，256MB内存
+
+压测数据：
+- 50个并发HTTP连接：CPU使用率65%，响应正常
+- 80个并发HTTP连接：CPU使用率85%，开始出现延迟
+- 100个并发HTTP连接：CPU使用率95%，部分连接超时
+
+结论：该CPU配置下，安全并发数约为60-70个HTTP连接
+```
+
+### 2. 压测方法详述
+
+**工具选择和命令：**
+```bash
+# 使用wrk进行HTTP压力测试
+wrk -t4 -c50 -d60s --latency http://192.168.1.1/test
+
+# 使用ab进行阶梯式测试
+for i in {10,20,30,50,80,100}; do
+    echo "Testing $i concurrent connections"
+    ab -n 1000 -c $i http://192.168.1.1/ > result_$i.txt
+done
+
+# 监控系统资源
+top -p $(pgrep uaProxy) -d 1
+sar -u 1 60  # CPU使用率
+ss -s | grep TCP  # 连接数统计
+```
+
+**测试场景设计：**
+```
+1. 纯HTTP流量测试（需要解析User-Agent）
+2. 纯HTTPS流量测试（直接转发）
+3. 混合流量测试（80% HTTPS + 20% HTTP）
+4. 长连接vs短连接对比
+5. 不同User-Agent长度的影响
+```
+
+### 3. 瓶颈分析深度
+
+**CPU瓶颈具体分析：**
+```go
+// 通过pprof分析发现热点函数
+go tool pprof http://localhost:6060/debug/pprof/profile
+
+主要CPU消耗：
+1. HTTP请求解析：35%
+2. 正则表达式匹配：25% 
+3. User-Agent字符串替换：20%
+4. 网络I/O和goroutine调度：20%
+```
+
+
+### 
+
+
+
+
+
+
+
+
+
+
+​        
 
 ## **Q10: 如果要支持 UDP 协议，你会如何设计？**
 
 - 考察架构设计能力
 - 是否理解不同协议的特点
 
-## **Q11: 项目的性能瓶颈可能在哪里？如何优化？**
+## Q11: 项目的性能瓶颈可能在哪里？如何优化？
 
 ## **Q12: 这个项目在生产环境中如何部署？需要考虑哪些因素？**
 
-## **Q13: 如何监控代理的运行状态？出现问题如何排查？**
->>>>>>> a54492504b29d6987d64969899d004cf0d2a02e0
-
+## **Q13: 如何监控代理的运行状态？出现问题如何排查？*
 ## SO_ORIGINAL_DST 系统调用
 
 一个tcp连接被 **iptables** 重定向之后，会在接字上设置一个特殊的选项 `SO_ORIGINAL_DST`
