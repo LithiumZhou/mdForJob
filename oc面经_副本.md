@@ -7552,7 +7552,7 @@ Objective-C 和 Java 是两种强大的面向对象编程语言，它们在软�
 
 ## oc编译过程
 
-## 🔹 1. 源码文件
+### 🔹 1. 源码文件
 
 - `.m` 文件：Objective-C 实现文件
 - `.h` 文件：头文件
@@ -7561,7 +7561,7 @@ Objective-C 和 Java 是两种强大的面向对象编程语言，它们在软�
 
 ------
 
-## 🔹 2. 编译过程（以 `.m` 为例）
+### 🔹 2. 编译过程（以 `.m` 为例）
 
 ### （1）预处理（Preprocessing）
 
@@ -7613,7 +7613,7 @@ clang -c main.s -o main.o
 clang main.o -framework Foundation -o main
 ```
 
-## 🔹 3. Objective-C 的特殊处理
+### 🔹 3. Objective-C 的特殊处理
 
 和普通 C 程序不同，Objective-C 编译时还要额外处理：
 
@@ -7630,7 +7630,7 @@ clang main.o -framework Foundation -o main
 
 ------
 
-## 🔹 4. 程序运行时
+### 🔹 4. 程序运行时
 
 编译完成只是生成可执行文件，真正运行还要依赖：
 
@@ -7639,7 +7639,7 @@ clang main.o -framework Foundation -o main
 
 ------
 
-## 🔹 总结
+### 🔹 总结
 
 Objective-C 的编译流程（和 C 类似）：
 
@@ -7957,7 +7957,7 @@ TCP 通过一个称为“**三次握手 (Three-Way Handshake)**”的过程来�
 
 * 在 2xx 成功状态码中，最常见的是 **200 OK**，表示请求成功并返回数据；**201 Created** 表示服务器成功创建了新的资源（post）。
 
-* 在 3xx 重定向中，**301 Moved Permanently 用于永久重定向**，**302 Found** 用于临时重定向。
+* 在 3xx 重定向中，**301 Moved Permanently 用于永久重定向**，**302 Found** 用于临时重定向，304表示缓存
 
 * **4xx** 是客户端错误，比如 400 Bad Request 表示请求格式错误，**401 Unauthorized 表示未授权**，**403 Forbidden 表示禁止访问**，最常见的 **404 Not Found** 表示资源不存在。
 
