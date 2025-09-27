@@ -2,6 +2,45 @@
 
 # 面经
 
+## ***load和initialize方法
+
+### 1. `+ (void)load` 方法
+
+`load` 方法是在类或分类（Category）被加载到内存时调用的，调用时机非常早。
+
+| 特性         | 说明                                                         |
+| ------------ | ------------------------------------------------------------ |
+| **调用时机** | **最早**。在 App 启动时，**程序的主函数 `main()` 执行之前**，只要类或分类被编译到可执行文件中，就会被调用。 |
+| **调用次数** | **只调用一次**。由运行时环境自动调用。                       |
+| **继承性**   | **不继承**。如果父类和子类都实现了 `load` 方法，那么两个方法都会被调用，**并且父类的 `load` 会先于子类的 `load` 调用**。对于分类，类及其所有分类的 `load` 都会被调用，顺序是：**类 → 分类**（分类的顺序由编译顺序决定） |
+|              |                                                              |
+| **主要用途** | 进行**方法交换（Method Swizzling）**或**注册（Register）**特定的子类。由于调用时机早且独立，它是执行不可依赖其他类状态的“硬核”初始化工作的理想场所。 |
+
+### 总结：
+
+`load` 方法是进行**运行时配置**（如方法交换）的最佳位置，因为它保证在一切开始之前执行，且不会受到继承的影响。
+
+### 2. `+ (void)initialize` 方法
+
+`initialize` 方法是在类第一次接收到**消息**时调用的，通常比 `load` 晚得多。
+
+| 特性         | 说明                                                         |
+| ------------ | ------------------------------------------------------------ |
+| **调用时机** | **懒加载（Lazy Loading）**。在类第一次接收到消息（如调用类方法或实例化对象）之前被调用。 |
+| **调用次数** | **只调用一次**。由运行时系统自动调用。                       |
+| **继承性**   | **遵循继承链**。如果子类没有实现 `initialize` 方法，会调用**父类**的 `initialize` 方法。**父类的 `initialize` 可能会被调用多次**（每次其子类第一次收到消息时，都会先确保父类被初始化）。为了避免重复初始化，通常需要在方法内部进行**安全检查**。 |
+| **安全性**   | **线程安全**。运行时系统保证在调用时是线程安全的。           |
+| **主要用途** | **进行类相关的配置**，**如设置静态变量**、初始化全局共享资源等。由于它是在运行时第一次使用时才调用，可以节省启动时间。 |
+
+## `load` 和 `initialize` 的关键区别
+
+| 特性         | `+load`                                    | `+initialize`                                           |
+| ------------ | ------------------------------------------ | ------------------------------------------------------- |
+| **调用时机** | **App 启动时，`main()` 之前**。            | **类第一次接收消息时**（懒加载）。                      |
+| **继承特性** | **不继承**。父类、子类、分类都会独立执行。 | **遵循继承链**。子类会调用父类版本，需手动检查 `self`。 |
+| **目的**     | **运行时配置**（如 Method Swizzling）。    | **类配置**、初始化静态/全局变量。                       |
+| **适用场景** | 必须在应用启动前完成的**关键设置**。       | 依赖于运行时环境的**按需初始化**。                      |
+
 ## SDWebImage这个库的详细介绍
 
 ### 核心功能 / 为什么它如此受欢迎？
@@ -426,7 +465,161 @@ for (MyDataModel *model in dataModels) {
 
 ## nonnull
 
+## nsstring和nsarray用哪种修饰符来修饰，为什么
+
+根据您的提问，**`NSString`** 和 **`NSArray`** 在属性声明中通常使用的修饰符是：
+
+  * 对于 **`NSString`**：通常使用 **`copy`** (或 **`strong`**)。
+  * 对于 **`NSArray`**：通常使用 **`copy`** (或 **`strong`**)。
+
+-----
+
+### 为什么使用这些修饰符
+
+### 1\. `copy` 修饰符（首选）
+
+对于像 `NSString` 和 `NSArray` 这样的**可变（Mutable）对应物**（如 `NSMutableString` 和 `NSMutableArray`）存在的**不可变（Immutable）对象**，通常建议使用 `copy` 修饰符。
+
+**主要原因是为了防止可变性带来的副作用 (Side Effects)：**
+
+假设您有一个属性声明为 `strong`：
+
+```objective-c
+@property (nonatomic, strong) NSString *name;
+```
+
+如果调用者传入的是一个 **可变的字符串对象** (`NSMutableString`)：
+
+```objective-c
+NSMutableString *mutableName = [NSMutableString stringWithString:@"Initial"];
+self.name = mutableName; // name 强引用了 mutableName
+// ...
+[mutableName appendString:@" Change"]; // 外部修改了 mutableName
+// ...
+NSLog(@"%@", self.name); // self.name 的值也会跟着改变，变成了 "Initial Change"
+```
+
+这违反了您的属性是 **`NSString`** (不可变类型) 的初衷，并可能导致不可预期的行为。
+
+-----
+
+而使用 **`copy`** 修饰符时：
+
+```objective-c
+@property (nonatomic, copy) NSString *name;
+```
+
+当您给 `name` 赋值时：
+
+```objective-c
+NSMutableString *mutableName = [NSMutableString stringWithString:@"Initial"];
+self.name = mutableName; // 触发 copy 操作，创建了一个新的 NSString 对象
+// ...
+[mutableName appendString:@" Change"]; // 外部修改了 mutableName，不会影响 self.name
+// ...
+NSLog(@"%@", self.name); // self.name 的值是 "Initial"，没有被外部修改
+```
+
+**`copy`** 会创建一个属性值（新对象）的**不可变副本**，从而确保了属性的内部值不会被外部修改，保证了数据的**封装性**和**不变性**。对于 `NSArray` 也是同样的道理。
+
+-----
+
+### 2\. `strong` 修饰符（备选）
+
+在某些情况下，也可以使用 **`strong`**：
+
+#### 场景 A：性能优化（不常用）
+
+如果您**确定**传入的值始终是不可变的 `NSString` 或 `NSArray`（例如，您只在类内部创建并赋值），并且您想避免额外的 `copy` 操作带来的性能开销，可以使用 `strong`。
+
+#### 场景 B：可变属性
+
+如果您声明的属性本身就是 **可变类型** (例如 `NSMutableString` 或 `NSMutableArray`)，那么应该使用 **`strong`**，因为您需要的是对**同一个可变对象**的强引用，而不是创建一个不可变的副本。
+
+```objective-c
+@property (nonatomic, strong) NSMutableString *mutableName; // 使用 strong
+```
+
 ## app冷启动
+
+## ***block的使用场景，如何避免循环引用
+
+这是一个关于 **Block** 非常好的问题。Block 是 Objective-C 中一个强大且常用的特性，它将一段代码及其执行时的上下文（捕获的变量）封装起来，可以在任何时候调用，非常灵活
+
+Block 本质上是**代码块**和**闭包**（Closure），它们最常用于以下需要延迟执行或定义回调的场景：
+
+### 1. 异步操作和多线程回调
+
+在进行耗时的操作（如网络请求、文件I/O）时，为了不阻塞主线程（UI），我们会将这些操作放到子线程中执行。Block 是处理这些操作完成后**回调**和**结果返回**的最佳方式。
+
+- **例子：** 网络请求库（如 `AFNetworking` 或原生 `NSURLSession`）通常使用 Block 来处理请求成功、失败的回调。
+
+  Objective-C
+
+  ```
+  [NetworkManager fetchDataWithCompletion:^(NSData *data, NSError *error) {
+      if (!error) {
+          // 成功：在主线程更新 UI
+      } else {
+          // 失败：处理错误
+      }
+  }];
+  ```
+
+### 2. 动画和延迟执行
+
+Block 允许您将一组相关的操作定义在一起，并在特定时间或条件满足时执行。
+
+- **例子：** `UIView` 动画（在 iOS 开发中）：
+
+  Objective-C
+
+  ```
+  [UIView animateWithDuration:0.3 animations:^{
+      // 动画过程中要执行的代码，如修改视图的 frame 或 alpha
+      self.myView.alpha = 0.5;
+  } completion:^(BOOL finished) {
+      // 动画完成后的回调
+      [self showNextView];
+  }];
+  ```
+
+### 3. 替代 Delegate（委托）模式
+
+当一个类只需要一个或少数几个回调时，使用 Block 可以极大地简化代码，避免定义协议和大量可选方法，使代码更加集中和清晰。
+
+- **例子：** 视图跳转传值、自定义控件的点击事件处理等。
+
+## 什么时候用 Block
+
+当您遇到以下情况时，通常是使用 Block 的最佳时机：
+
+1. **需要将一段代码作为参数传递给另一个方法时。**（延迟执行）
+2. **需要定义一个操作完成后的**回调（Callback）**机制时。**（如异步操作）
+3. **当您要**简化 Delegate（委托）模式**，且回调方法少于三个时。**
+4. **需要在代码执行时捕获并使用**当前上下文的变量**时。**
+
+### 3. 避免循环引用（Retain Cycle）
+
+**这是 Block 内存管理中最常见的问题。**
+
+当一个对象（如 `self`）持有一个 Block，而这个 Block 又**强引用**了该对象（`self`）时，就会形成引用循环，导致两者都无法释放（内存泄漏）。
+
+**解决办法：使用 `__weak` 或 `__unsafe_unretained`。**
+
+在 Block 内部需要访问 `self` 或 `self` 的实例变量时，应该先声明一个 `__weak` 引用：
+
+Objective-C
+
+```objc
+// 1. 声明一个弱引用的 self
+__weak typeof(self) weakSelf = self;
+
+self.myBlock = ^{
+    // 2. 在 Block 内部使用弱引用
+    [weakSelf doSomething]; 
+};
+```
 
 ## assign, weak, strong, copy,atomic,nonatomic
 
@@ -621,6 +814,8 @@ self.count = self.count + 1;
 
 主要就是维护weak指针。
 
+## mrc的使用和理解
+
 ## autoreleasepool
 
 1. **主线程的事件循环（系统层面，我们无感知）**：iOS应用的主线程RunLoop在每次事件循环（如处理一次点击、一次屏幕刷新）的开始和结束，系统都会自动地为我们创建和销毁一个自动释放池。这就是为什么我们在viewDidLoad或者按钮点击方法里创建的临时对象能够被自动回收的原因。
@@ -761,7 +956,7 @@ objc_autoreleasePoolPop(pool);
 * 一种根据cpu架构自适应的float，CGfloat在32位cpu下就是float，在64位cpu下会变成double
 * 具体底层实现 是通过条件编译
 
-## category能不能添加property
+## ？category能不能添加property
 
 这是一个非常经典且重要的 Objective-C 面试题，答案是“**可以，但又不完全可以**”，需要分两个层面来精确回答。
 
@@ -3035,6 +3230,30 @@ static MyManager *instance = nil;
 
 ## GCD
 
+### 第二部分：核心概念与工作原理 (How it Works)
+
+要理解GCD，必须先理解几个核心概念：
+
+1.  **任务 (Task)**：指的是我们希望执行的操作。在Objective-C和Swift中，这通常是一个**Block**或者一个函数。任务分为两种执行方式：
+    *   **同步 (Sync)**：使用 `dispatch_sync` 提交。这个函数会阻塞当前线程，直到提交的任务在指定队列上执行完毕后，才会返回。
+    *   **异步 (Async)**：使用 `dispatch_async` 提交。这个函数会立即返回，不会阻塞当前线程，任务会在后台的某个时间点被执行。这是实现并发和UI不卡顿的关键。
+
+2.  **队列 (Dispatch Queue)**：这是一个遵循**FIFO（先进先出）**原则的数据结构，用于存放待执行的任务。GCD中的队列主要分为两种类型：
+    *   **串行队列 (Serial Queue)**：同一时间内，队列中只有一个任务在执行。任务会一个接一个地、按顺序执行。虽然只有一个任务在跑，但执行任务的线程可能是变化的（由GCD决定）。主队列就是一个特殊的全局串行队列。
+    *   **并发队列 (Concurrent Queue)**：同一时间内，队列中可以有多个任务并发执行（只要系统有足够的计算资源）。任务的启动顺序仍然是FIFO，但它们的完成顺序是不可预测的。
+
+3.  **系统提供的队列**：
+    *   **主队列 (Main Queue)**：这是一个全局可用的**串行队列**，所有提交到主队列的任务都会在应用程序的**主线程**上执行。因此，所有UI更新相关的操作都必须放在主队列中。可以通过 `DispatchQueue.main` (Swift) 或 `dispatch_get_main_queue()` (OC) 获取。
+    *   **全局并发队列 (Global Concurrent Queues)**：这是系统为我们提供的并发队列，方便我们执行后台耗时操作。它们根据**服务质量（QoS）**进行了优先级划分，以告诉系统任务的重要程度，从而合理分配CPU、I/O等资源。常见的QoS级别有：
+        *   `userInteractive`: 用户交互相关，需要立即完成，优先级最高。
+        *   `userInitiated`: 用户主动发起的任务，需要快速响应。
+        *   `default`: 默认级别。
+        *   `utility`: 需要一些时间，用户不急切等待结果。
+        *   `background`: 后台维护性任务，对时间不敏感，优先级最低。
+        可以通过 `DispatchQueue.global(qos:)` 或 `dispatch_get_global_queue()` 获取。
+
+
+
 ### Dispatch Queues
 
 #### 1. 核心概念：任务、同步与异步、串行与并发
@@ -3287,114 +3506,6 @@ void dispatch_barrier_sync(dispatch_queue_t queue, dispatch_block_t barrier_bloc
 ```
 
 它的行为与 `dispatch_barrier_async` 类似，都保证了栅栏任务的独占执行。关键区别在于 `dispatch_barrier_sync` 会等待栅栏任务完成。这在某些场景下可能有用，例如，您需要立即知道写操作的结果才能继续执行后续代码，但它会牺牲调用线程的并发性。
-
-#### 4. 代码实战：创建一个线程安全的 `NSMutableArray`
-
-下面是一个经典的例子，演示如何使用 `dispatch_barrier_async` 来封装一个 `NSMutableArray`，使其可以被多个线程安全地读写。
-
-```objectivec
-#import <Foundation/Foundation.h>
-
-@interface ThreadSafeArray : NSObject
-
-// 公开的、不可变的数组属性，用于外部安全地读取数据快照
-@property (nonatomic, strong, readonly) NSArray *array;
-@property (nonatomic, readonly) NSUInteger count;
-
-- (void)addObject:(id)object;
-- (id)objectAtIndex:(NSUInteger)index;
-
-@end
-
-@implementation ThreadSafeArray {
-    // 1. 一个自定义的并发队列
-    dispatch_queue_t _concurrentQueue;
-    // 2. 内部的可变数组，作为实际的数据存储
-    NSMutableArray *_backingArray;
-}
-
-- (instancetype)init {
-    self = [super init];
-    if (self) {
-        // 创建一个并发队列，并使用反向DNS命名法进行标记，便于调试
-        _concurrentQueue = dispatch_queue_create("com.example.threadSafeArray.queue", DISPATCH_QUEUE_CONCURRENT);
-        _backingArray = [NSMutableArray array];
-    }
-    return self;
-}
-
-// 写操作：使用栅栏来确保独占访问
-- (void)addObject:(id)object {
-    // 使用异步栅栏，不会阻塞调用线程
-    dispatch_barrier_async(_concurrentQueue, ^{
-        // 这个 block 会在所有先前的读操作完成后执行
-        // 在它执行期间，不会有任何其他 block (读或写) 执行
-        [_backingArray addObject:object];
-        NSLog(@"添加对象 '%@' 到线程 %@", object, [NSThread currentThread]);
-    });
-}
-
-// 读操作：并发执行
-- (id)objectAtIndex:(NSUInteger)index {
-    __block id result;
-    // 使用同步方式从队列中读取，以确保能立即返回结果
-    dispatch_sync(_concurrentQueue, ^{
-        // 这个 block 可以与其他读操作并发执行
-        if (index < _backingArray.count) {
-            result = _backingArray[index];
-             NSLog(@"读取对象在线程 %@", [NSThread currentThread]);
-        }
-    });
-    return result;
-}
-
-// 读操作：并发执行
-- (NSUInteger)count {
-    __block NSUInteger count;
-    dispatch_sync(_concurrentQueue, ^{
-        count = _backingArray.count;
-    });
-    return count;
-}
-
-// 读操作：并发执行
-- (NSArray *)array {
-    __block NSArray *snapshot;
-    dispatch_sync(_concurrentQueue, ^{
-        snapshot = [_backingArray copy]; // 返回一个不可变副本，防止外部修改
-    });
-    return snapshot;
-}
-
-@end
-```
-
-**如何使用这个类：**
-
-```objectivec
-// 在某个方法中
-ThreadSafeArray *safeArray = [[ThreadSafeArray alloc] init];
-
-// 在多个线程中同时操作
-dispatch_queue_t globalQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
-
-// 启动多个写入者
-for (int i = 0; i < 5; i++) {
-    dispatch_async(globalQueue, ^{
-        [safeArray addObject:@(i)];
-    });
-}
-
-// 启动多个读者
-for (int i = 0; i < 5; i++) {
-    dispatch_async(globalQueue, ^{
-        NSUInteger count = safeArray.count;
-        NSLog(@"当前数组数量: %lu", (unsigned long)count);
-    });
-}
-```
-
-即使在多线程环境下，由于栅栏的存在，对 `_backingArray` 的访问也是完全安全的。
 
 ## NSOperation
 
@@ -5423,8 +5534,6 @@ NSLog(@"Frame after layout: %@", NSStringFromCGRect(myView.frame)); // -> {{93.7
 
 ## NSTimer造成的循环引用
 
----
-
 ### 一、问题场景：控制器与 Timer 的“死亡拥抱”
 
 最常见的 `NSTimer` 内存泄漏发生在**一个 `UIViewController` 中**。
@@ -5485,8 +5594,6 @@ NSLog(@"Frame after layout: %@", NSStringFromCGRect(myView.frame)); // -> {{93.7
 
 `self (Controller) ----strong----> timer ----strong----> self (Controller)`
 
-
-
 ### 三、内存泄漏的后果
 
 当用户离开这个 `MyViewController` 界面时（例如，通过 `navigationController` pop 返回上一级），会发生什么？
@@ -5501,7 +5608,6 @@ NSLog(@"Frame after layout: %@", NSStringFromCGRect(myView.frame)); // -> {{93.7
 **最终导致：**
 
 *   `MyViewController` 对象和 `NSTimer` 对象都无法被释放，造成了**内存泄漏**。
-*   定时器会一直在后台运行，持续消耗 CPU 资源。如果 `updateCountdown` 方法里有复杂逻辑，还会导致额外的性能问题。
 
 ---
 
@@ -5528,9 +5634,44 @@ NSLog(@"Frame after layout: %@", NSStringFromCGRect(myView.frame)); // -> {{93.7
 *   **优点**：简单易懂，改动最小。
 *   **缺点**：不够完美。如果 `timer` 是需要跨多个页面后台运行的，这种方法就不适用了。它只适用于 `timer` 的生命周期与视图控制器完全一致的场景。
 
-## 有哪些crash的情况
+### 2. 使用 Block 版本 API (推荐的现代方法)
 
-好的，在 Objective-C 开发中，Crash（崩溃）是每个开发者都必须面对和解决的问题。理解 Crash 的种类和原因，是提升应用稳定性的关键。
+在 iOS 10 / macOS 10.12 及更高版本中，苹果引入了基于 Block 的 `NSTimer` API，这允许我们使用 **弱引用 (Weak Reference)** 来打破循环。
+
+**Objective-C 代码（使用 Block API）：**
+
+Objective-C
+
+```objc
+- (void)startTimer {
+    // 创建 MyClass 的弱引用
+    __weak typeof(self) weakSelf = self; 
+
+    // 使用 timerWithTimeInterval:repeats:block:
+    self.timer = [NSTimer scheduledTimerWithTimeInterval:1.0 
+                                                 repeats:YES 
+                                                   block:^(NSTimer * _Nonnull timer) {
+        // 在 Block 内部使用弱引用或临时强引用
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (strongSelf) {
+            [strongSelf timerFired:timer];
+        } else {
+            // 如果 strongSelf 为空，说明 MyClass 已经被释放了，此时需要停止定时器
+            [timer invalidate];
+        }
+    }];
+}
+```
+
+在这个方法中：
+
+- `MyClass` 强引用 `NSTimer` (不变)。
+- `NSTimer` 强引用它持有的 **Block**。
+- **Block** 内部通过 `__weak typeof(self) weakSelf` 来弱引用 `MyClass`。
+
+这样就切断了 `NSTimer` → `MyClass` 的强引用链，从而解决了循环引用问题。
+
+## 有哪些crash的情况
 
 iOS 中的 Crash 大致可以分为两大类：**Mach 异常（底层内核级异常）** 和 **未被捕获的 NSException（上层应用级异常）**。此外，还有一些非典型的“崩溃”，如被系统强杀。
 
@@ -6288,6 +6429,36 @@ MVVM 的核心是引入了一个新的角色：`ViewModel`。它的任务是**�
 
 1.  **KVO (Key-Value Observing):** 这是Foundation框架提供的传统机制。可以让一个对象观察另一个对象的属性变化。虽然能用，但API比较古老，语法不直观，且需要注意移除观察者，否则容易导致崩溃。
 2.  **闭包/属性观察者 (简单场景):** 对于简单的单向数据流，我们也可以在ViewModel中定义一个闭包，比如`var onDataUpdate: (() -> Void)?`。当数据变化时，调用这个闭包。ViewController在初始化ViewModel时，将UI更新的代码赋给这个闭包。这种方式最轻量，但对于复杂交互就不够用了。
+
+这是一个关于 iOS/macOS 架构模式中对象持有（引用）关系的经典问题。理解这些关系对于避免内存泄漏（尤其是循环引用）至关重要。
+
+## MVC (Model-View-Controller) 中的持有关系
+
+在 Apple 平台的传统 MVC 模式中，对象之间的关系通常是**单向强持有**和**双向弱引用**的结合。
+
+| 对象                    | 持有谁？              | 被谁持有？                                                   | 关系类型 | 说明                                                         |
+| ----------------------- | --------------------- | ------------------------------------------------------------ | -------- | ------------------------------------------------------------ |
+| **VC (ViewController)** | **View** (强持有)     | **Navigation Controller** (强持有), **Tab Bar Controller** (强持有), **父 VC** (强持有) | **强**   | VC 是 View 的“拥有者”，生命周期与 View 紧密关联。            |
+| **View**                | **Subviews** (强持有) | **VC** (强持有)                                              | **强**   | View 通常不持有任何其他对象，其生命周期由其父 View 或 VC 控制。 |
+| **Model**               | (不持有其他架构对象)  | **VC** (强持有) 或 **其他服务层** (强持有)                   | **强**   | Model 是数据对象，由 VC 或数据管理者持有。                   |
+| **VC**                  | **Model** (强持有)    | **Model** (无，或弱引用 `delegate`)                          | **强**   | VC 通常强持有它需要展示的数据 Model。                        |
+| **Model**               | **VC**                | VC (弱引用 `delegate`)                                       | **弱**   | 如果 Model 需要通知 VC 数据变化，会通过 `delegate` 模式，通常是**弱引用**，以避免循环引用。 |
+
+### MVC 总结
+
+- **VC ↔ View：** VC 强持有 View（UIKit/AppKit 自动设置），View 不持有 VC。
+- **VC ↔ Model：** VC 强持有 Model。Model 如果需要反向通信，则对 VC 采用**弱引用 (`weak`) 的 Delegate**。
+
+## MVVM (Model-View-ViewModel) 中的持有关系
+
+### MVVM 总结
+
+- **VC → ViewModel：** **单向强持有**。VC 强持有 ViewModel。
+- **ViewModel → VC/View：** **无直接持有**。通过**数据绑定**（通知机制）进行通信。如果使用闭包或回调，必须使用 **`[weak self]`** 来避免循环引用。
+
+**核心目标：** **ViewModel 必须独立于 View 的生命周期。** 当 View/VC 被销毁时，它对 ViewModel 的强引用解除，ViewModel 也应被销毁。
+
+
 
 ## 软件设计原则
 
@@ -7813,9 +7984,66 @@ Objective-C
     *   **目的**: 修正**指向外部动态库**的函数或符号的指针。
     *   **过程**: `dyld`需要解析所有未定义的“桩”符号（stub）。例如，当你的代码调用`NSLog`时，Mach-O文件里只有一个指向`NSLog`的占位符。`dyld`会在所有加载的动态库的符号表中查找名为`_NSLog`的符号，找到它在内存中的**真实地址**，然后将这个真实地址**回填**到App的占位符位置。
 
+## oc中对一个nil调用方法 会报错吗 那假如这个方法返回值是bool 会返回什么
+
+在 Objective-C (OC) 中，对一个 **`nil` 对象发送消息（调用方法）** 是完全有效的，并且不会导致程序崩溃或抛出异常。这是一个非常重要的特性，也是 OC 和其他一些语言（如 Swift 或 Java）的主要区别之一。
 
 
 
+### 对 `nil` 调用方法会怎样？
+
+当你对 `nil` 对象调用方法时，运行时（runtime）会默默地忽略这个调用。
+
+- **对于没有返回值的方法**（返回 `void`），什么也不会发生，调用被安全地忽略。
+- **对于有返回值的方法**，返回值会是 `0`、`NULL`、`nil` 或 `NO`。具体取决于返回类型。
+
+### `nil` 方法调用的返回值
+
+根据方法的返回类型，对 `nil` 调用方法会返回一个“零值”（zero value）。
+
+1. **对象类型（id 或自定义类）：** 返回 `nil`。
+   - 比如 `NSString *myString = nil;`
+   - `NSString *result = [myString uppercaseString];`
+   - 这里的 `result` 将是 `nil`。
+2. **基本数据类型：** 返回 `0`。
+   - 比如 `int result = [myObject intValue];` 如果 `myObject` 是 `nil`，`result` 会是 `0`。
+   - **特别注意：** `NSInteger`、`CGFloat`、`float`、`double` 等类型也会返回 `0`。
+3. **布尔类型（`BOOL`）：** 返回 `NO`。
+   - 比如 `BOOL isValid = [myObject isValid];`
+   - 如果 `myObject` 是 `nil`，`isValid` 会被赋值为 `NO`。
+
+下面是一个关于布尔类型返回值的具体例子：
+
+Objective-c
+
+```objective-c
+@interface MyClass : NSObject
+- (BOOL)isReady;
+@end
+
+@implementation MyClass
+- (BOOL)isReady {
+    // 假设这个方法做一些检查
+    return YES;
+}
+@end
+
+int main() {
+    MyClass *obj = [[MyClass alloc] init];
+    BOOL result1 = [obj isReady]; // result1 将是 YES
+
+    MyClass *nilObj = nil;
+    BOOL result2 = [nilObj isReady]; // result2 将是 NO
+
+    if (result2 == NO) {
+        NSLog(@"对 nil 调用 BOOL 方法，返回了 NO。");
+    }
+
+    return 0;
+}
+```
+
+ 
 
 # 计网
 
@@ -9010,8 +9238,6 @@ https如何实现可靠传输
 ## ？TCP的数据校验方式
 
 ## ？有哪些非对称加密算法， 有哪些对称加密算法
-
-
 
 ## 三次握手主要交换什么信息
 
