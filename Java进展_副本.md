@@ -381,8 +381,6 @@ class Box {
 
 * 先把return的值保存起来，再去执行finally，假如finally里也有return 就会return finally的值。
 
-fans
-
 ### 数据结构了解哪些
 
 * 数组、链表、栈、队列，哈希表
@@ -1122,7 +1120,7 @@ G1 的回收过程主要涉及以下几种类型的 GC 活动，它们穿插进�
 
 理解 G1 的关键在于理解 Region 的概念、RSet 的作用以及 Young GC、Concurrent Marking Cycle 和 Mixed GC 这几个核心阶段是如何协同工作的。
 
-### ***常用的jdk版本
+### 常用的jdk版本
 
 ### ？？？java的内存分配和回收过程
 
