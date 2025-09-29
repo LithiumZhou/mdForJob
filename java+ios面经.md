@@ -1,5 +1,394 @@
 # 面经
 
+## ***MVMM
+
+好的，这是一个非常核心的架构设计问题。我们不仅要理解 MVC 和 MVVM 的理论区别，更重要的是能通过代码来直观地感受它们在**职责划分、代码组织和可测试性**上的巨大差异。
+
+我们将以一个非常简单的“登录”场景为例，分别用 MVC 和 MVVM 来实现，让你能清晰地看到对比。
+
+**场景需求**:
+
+*   界面上有两个输入框：用户名（`username`）和密码（`password`）。
+*   一个登录按钮（`loginButton`）。
+*   当用户名和密码都输入内容后，登录按钮才可用。
+*   点击登录按钮，模拟一个网络请求，然后根据结果显示成功或失败的提示。
+
+---
+
+### **MVC (Model-View-Controller) 模式实现**
+
+在经典的 MVC 模式中，`Controller` 是一个“大总管”，它承担了几乎所有的“胶水代码”和业务逻辑。
+
+#### **1. Model (`LoginModel.h/m`)**
+
+模型非常简单，只负责定义数据结构。
+
+```objc
+// LoginModel.h
+@interface LoginModel : NSObject
+@property (nonatomic, copy) NSString *username;
+@property (nonatomic, copy) NSString *password;
+@end
+```
+
+#### **2. View (`LoginViewController` 的 `view`)**
+
+视图层就是 `LoginViewController` 的 `view` 以及其上的 `UITextField` 和 `UIButton`。它本身没有逻辑。
+
+#### **3. Controller (`LoginViewController.h/m`)**
+
+`Controller` 是所有逻辑的中心。
+
+```objc
+// LoginViewController.m
+#import "LoginViewController.h"
+#import "LoginModel.h"
+
+@interface LoginViewController () <UITextFieldDelegate>
+@property (nonatomic, strong) UITextField *usernameField;
+@property (nonatomic, strong) UITextField *passwordField;
+@property (nonatomic, strong) UIButton *loginButton;
+@property (nonatomic, strong) LoginModel *model;
+@end
+
+@implementation LoginViewController
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    
+    self.model = [[LoginModel alloc] init];
+    
+    // --- View 的创建和布局 ---
+    [self setupViews];
+    
+    // --- Controller 承担了所有的事件处理和逻辑 ---
+    [self.usernameField addTarget:self action:@selector(textFieldDidChange:) forControlEvents:UIControlEventEditingChanged];
+    [self.passwordField addTarget:self action:@selector(textFieldDidChange:) forControlEvents:UIControlEventEditingChanged];
+    [self.loginButton addTarget:self action:@selector(loginButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
+    
+    // --- Controller 承担了初始状态的设置 ---
+    [self updateLoginButtonState];
+}
+
+// 1. 事件处理：监听 TextField 的变化
+- (void)textFieldDidChange:(UITextField *)textField {
+    if (textField == self.usernameField) {
+        self.model.username = textField.text;
+    } else if (textField == self.passwordField) {
+        self.model.password = textField.text;
+    }
+    
+    // 2. 业务逻辑：根据 Model 的状态更新 View
+    [self updateLoginButtonState];
+}
+
+// 3. 业务逻辑：更新登录按钮的可用状态
+- (void)updateLoginButtonState {
+    BOOL isUsernameValid = self.model.username.length > 0;
+    BOOL isPasswordValid = self.model.password.length > 0;
+    self.loginButton.enabled = isUsernameValid && isPasswordValid;
+    self.loginButton.backgroundColor = self.loginButton.enabled ? [UIColor blueColor] : [UIColor grayColor];
+}
+
+// 4. 事件处理 & 网络逻辑：处理登录按钮点击
+- (void)loginButtonTapped:(UIButton *)sender {
+    NSLog(@"开始登录，用户名: %@, 密码: %@", self.model.username, self.model.password);
+    
+    // 模拟网络请求
+    [self showLoadingIndicator];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self hideLoadingIndicator];
+        // 模拟成功
+        if ([self.model.username isEqualToString:@"admin"] && [self.model.password isEqualToString:@"123"]) {
+            [self showAlertWithTitle:@"成功" message:@"登录成功！"];
+        } else {
+            [self showAlertWithTitle:@"失败" message:@"用户名或密码错误"];
+        }
+    });
+}
+// ... 省略 setupViews, showAlertWithTitle, showLoadingIndicator 等 UI 代码 ...
+@end
+```
+
+**MVC 的问题在这里体现得淋漓尽致：**
+
+*   **Massive View Controller (臃肿的视图控制器)**: `LoginViewController` 做了太多事！它既要负责创建和布局 `View`，又要监听 `View` 的事件，还要更新 `Model`，同时处理业务逻辑（按钮是否可用），甚至还包含了网络请求和弹窗提示。
+*   **耦合度高**: `View` (TextField, Button) 和 `Controller` 紧密耦合。`Model` 和 `Controller` 也紧密耦合。
+*   **可测试性差**: 几乎所有的逻辑都在 `ViewController` 里。你怎么去测试“按钮可用性”这个逻辑？你必须创建一个完整的 `LoginViewController` 实例，还要给它添加 `View`，然后模拟文本输入... 这非常困难。
+
+---
+
+### **MVVM (Model-View-ViewModel) 模式实现**
+
+MVVM 的核心是引入了一个新的角色：`ViewModel`。它的任务是**从 `Controller` 中抽离出“展示逻辑”和“状态”**。
+
+#### **1. Model (`LoginModel.h/m`)**
+
+保持不变。
+
+#### **2. View (`LoginViewController` 的 `view`)**
+
+保持不变，但它的**数据源和事件处理者**将变成 `ViewModel`。
+
+#### **3. ViewModel (`LoginViewModel.h/m`)**
+
+这是 MVVM 的灵魂。它是一个纯粹的 `NSObject`，不包含任何 `UIKit` 的东西。
+
+```objc
+// LoginViewModel.h
+#import "LoginModel.h"
+
+@interface LoginViewModel : NSObject
+
+// --- 属性：暴露给 View 的状态 ---
+@property (nonatomic, copy) NSString *username;
+@property (nonatomic, copy) NSString *password;
+
+// --- 属性：经过处理后，可以直接被 View 绑定的状态 ---
+@property (nonatomic, assign, readonly) BOOL isLoginButtonEnabled;
+@property (nonatomic, strong, readonly) UIColor *loginButtonColor;
+@property (nonatomic, copy, readonly) NSString *statusText;
+
+// --- Block 回调：用于通知 View 发生了变化 ---
+@property (nonatomic, copy) void (^loginStateDidChange)(LoginViewModel *viewModel);
+
+// --- 方法：暴露给 View 的行为 ---
+- (void)login;
+
+@end
+```
+
+```objc
+// LoginViewModel.m
+@implementation LoginViewModel
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        // 初始化状态
+        [self updateLoginState];
+    }
+    return self;
+}
+
+// 1. 当输入变化时，更新内部状态
+- (void)setUsername:(NSString *)username {
+    _username = username;
+    [self updateLoginState];
+}
+
+- (void)setPassword:(NSString *)password {
+    _password = password;
+    [self updateLoginState];
+}
+
+// 2. 核心的“展示逻辑”，更新可绑定的属性
+- (void)updateLoginState {
+    BOOL isUsernameValid = self.username.length > 0;
+    BOOL isPasswordValid = self.password.length > 0;
+    
+    // 更新可以直接被 View 使用的状态
+    _isLoginButtonEnabled = isUsernameValid && isPasswordValid;
+    _loginButtonColor = _isLoginButtonEnabled ? [UIColor blueColor] : [UIColor grayColor];
+    
+    // 通过回调通知 View 刷新
+    if (self.loginStateDidChange) {
+        self.loginStateDidChange(self);
+    }
+}
+
+// 3. 核心的“业务逻辑”
+- (void)login {
+    NSLog(@"ViewModel 开始登录，用户名: %@, 密码: %@", self.username, self.password);
+    
+    _statusText = @"正在登录...";
+    if (self.loginStateDidChange) { self.loginStateDidChange(self); }
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if ([self.username isEqualToString:@"admin"] && [self.password isEqualToString:@"123"]) {
+            self->_statusText = @"登录成功！";
+        } else {
+            self->_statusText = @"用户名或密码错误";
+        }
+        if (self.loginStateDidChange) { 
+          self.loginStateDidChange(self); 
+        }
+    });
+}
+@end
+```
+
+#### **4. Controller (`LoginViewController.h/m`)**
+
+`Controller` 现在变得极其“苗条”。它的唯一职责就是**创建并持有 `View` 和 `ViewModel`，并把它们“绑定”在一起**。
+
+```objc
+// LoginViewController.m (MVVM version)
+#import "LoginViewController.h"
+#import "LoginViewModel.h"
+
+@interface LoginViewController ()
+@property (nonatomic, strong) UITextField *usernameField;
+@property (nonatomic, strong) UITextField *passwordField;
+@property (nonatomic, strong) UIButton *loginButton;
+@property (nonatomic, strong) UILabel *statusLabel; // 用于显示状态
+@property (nonatomic, strong) LoginViewModel *viewModel;
+@end
+
+@implementation LoginViewController
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    
+    self.viewModel = [[LoginViewModel alloc] init];
+    
+    [self setupViews];
+    
+    // --- Controller 唯一的核心职责：数据绑定 (Data Binding) ---
+    [self bindViewModel];
+}
+
+- (void)bindViewModel {
+    // 1. View -> ViewModel 的绑定
+    [self.usernameField addTarget:self action:@selector(usernameDidChange:) forControlEvents:UIControlEventEditingChanged];
+    [self.passwordField addTarget:self action:@selector(passwordDidChange:) forControlEvents:UIControlEventEditingChanged];
+    [self.loginButton addTarget:self.viewModel action:@selector(login) forControlEvents:UIControlEventTouchUpInside];
+    
+    // 2. ViewModel -> View 的绑定 (通过 Block 回调)
+    __weak typeof(self) weakSelf = self;
+    self.viewModel.loginStateDidChange = ^(LoginViewModel *viewModel) {
+        // 当 ViewModel 的状态改变时，这个 block 会被调用
+        // Controller 在这里把 ViewModel 的新状态，应用到 View 上
+        weakSelf.loginButton.enabled = viewModel.isLoginButtonEnabled;
+        weakSelf.loginButton.backgroundColor = viewModel.loginButtonColor;
+        weakSelf.statusLabel.text = viewModel.statusText;
+    };
+    
+    // 3. 触发一次初始绑定
+    self.viewModel.loginStateDidChange(self.viewModel);
+}
+
+// 事件处理，只负责将 View 的变化传递给 ViewModel
+- (void)usernameDidChange:(UITextField *)textField {
+    self.viewModel.username = textField.text;
+}
+
+- (void)passwordDidChange:(UITextField *)textField {
+    self.viewModel.password = textField.text;
+}
+// ... 省略 setupViews ...
+@end
+```
+
+又或者用kvo更新view的状态
+
+```objc
+// LoginViewController.m
+
+- (void)bindViewModel {
+    // 注册观察者
+    [self.viewModel addObserver:self forKeyPath:@"isLoginButtonEnabled" options:NSKeyValueObservingOptionNew context:nil];
+    [self.viewModel addObserver:self forKeyPath:@"loginButtonColor" options:NSKeyValueObservingOptionNew context:nil];
+    [self.viewModel addObserver:self forKeyPath:@"statusText" options:NSKeyValueObservingOptionNew context:nil];
+    
+    // ... View -> ViewModel 的绑定不变 ...
+}
+
+// 实现观察者方法
+- (void)observeValueForKeyPath:(NSString *)keyPath 
+                      ofObject:(id)object 
+                        change:(NSDictionary<NSKeyValueChangeKey,id> *)change 
+                       context:(void *)context {
+    if (object == self.viewModel) {
+        // 在这里根据 keyPath 更新对应的 UI
+        if ([keyPath isEqualToString:@"isLoginButtonEnabled"]) {
+            self.loginButton.enabled = self.viewModel.isLoginButtonEnabled;
+        } else if ([keyPath isEqualToString:@"loginButtonColor"]) {
+            self.loginButton.backgroundColor = self.viewModel.loginButtonColor;
+        } else if ([keyPath isEqualToString:@"statusText"]) {
+            self.statusLabel.text = self.viewModel.statusText;
+        }
+    }
+}
+
+- (void)dealloc {
+    // 必须移除观察者
+    [self.viewModel removeObserver:self forKeyPath:@"isLoginButtonEnabled"];
+    [self.viewModel removeObserver:self forKeyPath:@"loginButtonColor"];
+    [self.viewModel removeObserver:self forKeyPath:@"statusText"];
+}
+```
+
+#### 问题一：“请解释一下你理解的MVVM是什么？”
+
+**优秀回答 (展现深度和思考)：**
+“MVVM是一种旨在**分离用户界面（View）和业务逻辑/状态（ViewModel）**的架构模式。它的核心思想是解决苹果官方MVC中ViewController过于臃肿（Massive View Controller）的问题。”
+
+“在我看来，MVVM可以这样理解：”
+
+*   **Model:** 和MVC中的一样，是纯粹的数据模型，负责定义数据结构和提供数据。
+*   **View/ViewController:** 它的职责被大大简化，只负责两件事：**UI的布局和渲染**，以及**将用户的操作（如点击）转发给ViewModel**。它本身不包含任何业务逻辑。在iOS中，`UIViewController` 和 `UIView` 都属于View层。
+*   **ViewModel:** 这是MVVM的精髓。它是一个**专门为View服务的对象**。它从Model获取原始数据，然后进行加工处理，转换成View可以直接展示的**状态和数据**（比如把Date对象格式化成"2023-10-27"这样的字符串）。同时，它也提供命令（Command）来响应View转发过来的用户操作。
+
+“最关键的一点是，**ViewModel不直接持有View的引用**。它们之间通过**数据绑定（Data Binding）**机制进行通信，实现了View和ViewModel的彻底解耦，这为单元测试带来了巨大的便利。”
+
+> **面试官追问点：** 为什么ViewModel不应该持有View？（答案：为了解耦和可测试性。一旦持有View，ViewModel就依赖了UIKit，无法进行脱离UI的单元测试，也容易造成循环引用。）
+
+---
+
+#### 问题二：“MVVM和MVC相比，有什么具体的优缺点？”
+
+**普通回答：**
+“MVVM的优点是解耦、可测试性好。缺点是对于简单页面，会增加一些类和复杂度。”
+
+**优秀回答 (结合具体痛点和解决方案)：**
+“MVVM最大的优点是它精准地解决了苹果MVC架构下的**‘Massive View Controller’（重量级视图控制器）**问题。在MVC中，大量的业务逻辑、网络请求、数据加工代码都堆在ViewController里，导致其非常臃肿且难以测试。”
+
+“具体来说，MVVM的优势体现在：”
+
+1.  **高度解耦 (High Decoupling):** View和ViewModel通过数据绑定通信，彼此没有直接依赖。ViewModel也不知道展示它数据的是`UILabel`还是`UITextView`，它只负责输出“状态”。这使得更换UI变得非常容易。
+2.  **极高的可测试性 (Excellent Testability):** 这是MVVM最核心的优势。因为ViewModel是一个**纯粹的Swift/Objective-C对象**，它不依赖任何UIKit/SwiftUI的组件。所以我们可以非常轻松地在单元测试环境中实例化一个ViewModel，给它输入，然后断言它的输出是否符合预期，测试覆盖率可以做得非常高。
+3.  **职责分离 (Separation of Concerns):** UI设计师可以专注于View层，而业务逻辑开发者可以专注于ViewModel层，两者可以并行工作，互不干扰。
+
+---
+
+#### 问题三：“你通常如何实现View和ViewModel之间的数据绑定？”
+
+**普通回答：**
+
+1.  **KVO (Key-Value Observing):** 这是Foundation框架提供的传统机制。可以让一个对象观察另一个对象的属性变化。虽然能用，但API比较古老，语法不直观，且需要注意移除观察者，否则容易导致崩溃。
+2.  **闭包/属性观察者 (简单场景):** 对于简单的单向数据流，我们也可以在ViewModel中定义一个闭包，比如`var onDataUpdate: (() -> Void)?`。当数据变化时，调用这个闭包。ViewController在初始化ViewModel时，将UI更新的代码赋给这个闭包。这种方式最轻量，但对于复杂交互就不够用了。
+
+这是一个关于 iOS/macOS 架构模式中对象持有（引用）关系的经典问题。理解这些关系对于避免内存泄漏（尤其是循环引用）至关重要。
+
+### MVC (Model-View-Controller) 中的持有关系
+
+在 Apple 平台的传统 MVC 模式中，对象之间的关系通常是**单向强持有**和**双向弱引用**的结合。
+
+| 对象                    | 持有谁？              | 被谁持有？                                                   | 关系类型 | 说明                                                         |
+| ----------------------- | --------------------- | ------------------------------------------------------------ | -------- | ------------------------------------------------------------ |
+| **VC (ViewController)** | **View** (强持有)     | **Navigation Controller** (强持有), **Tab Bar Controller** (强持有), **父 VC** (强持有) | **强**   | VC 是 View 的“拥有者”，生命周期与 View 紧密关联。            |
+| **View**                | **Subviews** (强持有) | **VC** (强持有)                                              | **强**   | View 通常不持有任何其他对象，其生命周期由其父 View 或 VC 控制。 |
+| **Model**               | (不持有其他架构对象)  | **VC** (强持有) 或 **其他服务层** (强持有)                   | **强**   | Model 是数据对象，由 VC 或数据管理者持有。                   |
+| **VC**                  | **Model** (强持有)    | **Model** (无，或弱引用 `delegate`)                          | **强**   | VC 通常强持有它需要展示的数据 Model。                        |
+| **Model**               | **VC**                | VC (弱引用 `delegate`)                                       | **弱**   | 如果 Model 需要通知 VC 数据变化，会通过 `delegate` 模式，通常是**弱引用**，以避免循环引用。 |
+
+### MVC 总结
+
+- **VC ↔ View：** VC 强持有 View（UIKit/AppKit 自动设置），View 不持有 VC。
+- **VC ↔ Model：** VC 强持有 Model。Model 如果需要反向通信，则对 VC 采用**弱引用 (`weak`) 的 Delegate**。
+
+### MVVM (Model-View-ViewModel) 中的持有关系
+
+### MVVM 总结
+
+- **VC → ViewModel：** **单向强持有**。VC 强持有 ViewModel。
+- **ViewModel → VC/View：** **无直接持有**。通过**数据绑定**（通知机制）进行通信。如果使用闭包或回调，必须使用 **`[weak self]`** 来避免循环引用。
+
+**核心目标：** **ViewModel 必须独立于 View 的生命周期。** 当 View/VC 被销毁时，它对 ViewModel 的强引用解除，ViewModel 也应被销毁。
+
+
+
 ## ***load和initialize方法
 
 ### 1. `+ (void)load` 方法
@@ -436,6 +825,307 @@ AutoLayout的原理是基于Cassowary算法的一种实现。Cassowary是一种�
 
 * 自动插入retain，release，autorelease
 * 自动维护了weak指针
+
+## ***oc编译过程
+
+### 🔹 2. 编译过程（以 `.m` 为例）
+
+### （1）预处理（Preprocessing）
+
+- 处理 `#import`、`#define`、宏替换
+- 生成纯 C/Objective-C 代码，扩展后的临时文件（通常是 `.i`）
+
+命令示例：
+
+```bash
+clang -E main.m -o main.i
+```
+
+------
+
+### （2）编译（Compiling）
+
+- 把 `.i` 转换成 **LLVM IR**（中间语言，类似汇编）
+- 处理语法检查、类型检查
+- 最终生成汇编代码（`.s` 文件）
+
+命令示例：
+
+```bash
+clang -S main.i -o main.s
+```
+
+------
+
+### （3）汇编（Assembling）
+
+- 汇编器把 `.s` 文件转成 **目标文件** `.o`（二进制机器码，但未链接）
+
+命令示例：
+
+```bash
+clang -c main.s -o main.o
+```
+
+------
+
+### （4）链接（Linking）
+
+- 链接所有 `.o` 文件和依赖的 **静态库（.a）**、**动态库（.dylib / framework）**
+- 生成最终可执行文件（Mach-O 格式）
+
+命令示例：
+
+```bash
+clang main.o -framework Foundation -o mai
+```
+
+------
+
+### 🔹 4. 程序运行时
+
+编译完成只是生成可执行文件，真正运行还要依赖：
+
+- **dyld**：动态链接器，加载可执行文件和依赖库
+- **Objective-C runtime**：注册类、方法、Category，支持消息发送、KVO、isa-swizzling 等动态特性
+
+------
+
+### 🔹 总结
+
+Objective-C 的编译流程（和 C 类似）：
+
+```
+源代码 (.m/.h)
+   ↓ 预处理
+.i 文件
+   ↓ 编译 (Clang → LLVM IR → 汇编)
+.s 文件
+   ↓ 汇编
+.o 文件
+   ↓ 链接 (lib + framework)
+Mach-O 可执行文件
+   ↓ (运行时：dyld + ObjC runtime)
+程序启动
+```
+
+`dyld` 主要做以下几件大事：
+
+#### 1. 装载依赖库 (Loading Libraries)
+
+*   **比喻：** 把所有装家具零件的箱子搬进房间。
+*   **技术解释：** 你的 App 不仅仅包含你写的代码，还依赖很多苹果官方的“零件库”（如 `UIKit`, `Foundation`）和第三方的“零件库”（如 `AFNetworking`）。`dyld` 的第一件事就是找到所有这些必需的库（动态库 `.dylib`），然后把它们全部加载到内存里。
+
+#### 2. Rebase 和 Bind (最重要的环节，也是最耗时的)
+
+*   **比喻：** 仔细阅读说明书，把螺丝拧到正确的孔里，把 A 板和 B 板连接起来。
+*   **技术解释：** 由于安全机制 **ASLR** (地址空间布局随机化)，你的 App 每次启动时，它和它依赖的库在内存中的地址都是**随机**的。这就导致代码里写死的地址引用全部失效了。
+    *   **Rebase (内部修正):** `dyld` 需要修正 App **内部**的指针。比如，你自己的一个函数要调用你自己的另一个函数，`dyld` 就要计算出它们今天在内存中的新地址，然后把这个调用关系“接上”。
+    *   **Bind (外部绑定):** `dyld` 需要把你 App 的代码和**外部**库的代码“绑定”在一起。这是我们讨论的**核心**。比如，你的代码里调用了 `NSLog()`，`dyld` 必须去 `Foundation` 库里找到 `NSLog` 函数的真实内存地址，然后把你的调用代码指向这个地址。**这个查找和绑定的过程，就是性能瓶颈所在。**
+
+#### 3. 运行初始化代码 (Run Initializers)
+
+*   **比喻：** 家具组装好后，给里面的电器通上电，让它们自检。
+*   **技术解释：** `dyld` 会执行所有 Objective-C 的 `+load` 方法和 C++ 的静态构造函数。这些代码被要求在 `main` 函数之前必须执行完毕。
+
+当 `dyld` 做完所有这些工作后，它才会调用你熟悉的 `main` 函数，App 的启动流程才进入到你自己可控的部分。
+
+## ***为什么ios一定要在主线程操作ui
+
+### 1. UIKit的非线程安全 (Not Thread-Safe)
+
+这是最核心、最底层的约束。
+
+*   **内部状态和数据结构：** 一个UI对象（如`UIView`或`UIViewController`）内部包含了大量的状态和数据结构，例如它的`frame`、`bounds`、`layer`树、子视图数组、约束等。这些内部数据被设计为只能由一个执行上下文（即一个线程）来访问和修改。
+*   **并发修改的风险：** 如果允许两个线程同时操作同一个`UIView`，就会发生竞态条件（Race Condition）。例如：
+    *   **线程A** 正在计算并设置视图的新位置：`view.frame = newFrame;`。这个操作可能涉及多个步骤，比如修改`origin`和`size`的内部变量。
+    *   **线程B** 同时在修改视图的背景色：`view.backgroundColor = [UIColor redColor];`。
+    *   如果操作系统在这两个操作之间切换线程，可能会导致`UIView`的内部数据处于一个不一致的、中间的状态。比如，`frame`的`origin`被更新了，但`size`还没有，此时线程B的修改可能会基于这个不完整的数据进行，最终导致视图损坏、渲染异常甚至程序崩溃。
+*   **为什么不加锁？** 有人会问，为什么苹果不给所有UI对象的操作都加上锁（Lock）来让它变得线程安全？
+    *   **性能开销巨大：** UI操作非常频繁。如果每次修改一个`UILabel`的文字或一个`UIView`的位置都需要进行加锁和解锁，这种同步开销会严重拖慢UI的响应速度，导致界面卡顿。
+    *   **死锁风险：** 在一个复杂的视图层级中，加锁很容易引发死锁（Deadlock）。比如线程A锁住了父视图，想去操作子视图；而线程B同时锁住了子视图，想去操作父视图，两个线程就会互相等待对方释放锁，导致程序完全卡死。
+
+**结论：** 出于性能和复杂度的考量，UIKit从设计之初就选择了“非线程安全”这条路。作为补偿，它提供了一个严格的规则：**所有对UIKit对象的访问都必须在同一个、指定的线程上进行串行化处理，这个线程就是主线程。**
+
+### 2. 渲染同步（保证画面一致）
+
+**UI 渲染只能在主线程的 Run Loop 中统一进行。**
+
+- 主线程的 **Run Loop** 在每个周期都会在固定的时间点触发 **Core Animation** 来“拍照”并收集所有 UI 属性的最新值，然后将这些指令提交给 GPU 渲染。
+- **结果：** 如果子线程进行 UI 修改，这些修改的完成时机是**不确定**的。主线程在拍照时，很可能只拍到了一半的修改（例如，颜色更新了，但位置还没更新）。
+- **主线程的作用：** 确保所有的 UI 变更都在主线程中**原子性地**（即要么全部完成，要么全部不完成）发生，这样在 Run Loop 拍照渲染时，画面状态总是**完整且一致**的，避免了画面闪烁或错乱。
+
+## ***聊聊property
+
+一种语法糖，会在编译时自动生成·
+
+**`@property` 本质上是一个编译器指令，它会自动为你生成一个用于存储数据的私有实例变量（`ivar`），以及一套标准的、遵循你指定内存管理规则（如`strong`或`copy`）的 `getter` 和 `setter` 方法，从而让你能以“点语法”（`object.property`）安全地访问这个变量。**
+
+## ***category能不能添加property
+
+**简短的答案是：**
+
+> 你**可以**在 `Category` 的 `@interface` 中声明 `@property`，但这只会为你生成 **getter 和 setter 方法的声明**。它**不会**自动为你生成实例变量（ivar），也**不会**自动为你合成 getter/setter 方法的实现。你需要通过**关联对象（Associated Objects）**来手动实现这些方法的背后存储。
+
+---
+
+### **详细的、分层次的回答**
+
+#### **第一步：回答“可不可以”**
+
+“是的，我们**可以在 `Category` 中声明 `@property`**。从语法上讲，这是完全允许的。”
+
+```objc
+// UIView+MyAdditions.h
+#import <UIKit/UIKit.h>
+
+@interface UIView (MyAdditions)
+
+// 语法上完全正确
+@property (nonatomic, strong) NSString *myCustomID;
+
+@end
+```
+
+---
+
+**为什么不行**
+
+1.  **不会自动生成实例变量**: “它不会为我们生成一个 `_myCustomID` 这样的下划线实例变量。这是因为 `Category` 的底层结构 `category_t` 中，根本就没有空间来存储实例变量的信息。一个类的内存布局在编译时就已经确定了，`Category` 是在运行时才被附加到类上的，它不能在运行时去改变一个类已经固化的内存大小和布局。”
+2.  **不会自动合成存取方法**: “由于没有实例变量可以去存取，编译器也**不会**为我们自动合成 `setMyCustomID:` 和 `myCustomID` 这两个方法的**实现**。”
+
+“实际上，在 `Category` 中声明 `@property`，就等价于你在这个 `Category` 的 `@implementation` 中隐式地写下了 **`@dynamic myCustomID;`**。它是在告诉编译器：‘这两个方法的实现，我会在运行时通过其他方式提供，你不用管了。’”
+
+## ***category的原理
+
+简单来说，`Category` 的核心作用是：**在不修改原始类源代码、也不知道其内部实现的情况下，为这个类动态地添加新的方法。**
+
+---
+
+### 一、`Category` 能做什么，不能做什么？
+
+在深入原理之前，我们先明确它的能力边界：
+
+**能做到的：**
+
+1.  **添加实例方法**: 这是最主要、最常见的用途。可以为一个已存在的类（甚至是你没有源码的系统类，如 `NSString`）添加新的功能。
+2.  **添加类方法**: 同样可以为类本身添加新的方法。
+3.  **实现协议**: 可以让一个类遵循某个新的协议，并实现协议中定义的方法。
+4.  **拆分实现**: 将一个庞大的类的实现，拆分到多个不同的 `.m` 文件中，以提高代码的组织性和可维护性。
+
+---
+
+### 二、`Category` 的编译与加载原理
+
+`Category` 的魔法，完全是在**运行时 (Runtime)** 才真正展现的。
+
+#### **1. 编译时**
+
+* 当你编译一个 `Category` 文件时（比如 `NSString+MyAdditions.m`），编译器会把它编译成一个独立的二进制文件。
+
+* 在编译产物中，`Category` 被表示为一个名为 `category_t` 的 C 结构体。这个结构体里包含了关于这个 `Category` 的所有信息：
+
+  ```c
+  struct category_t {
+      const char *name; // Category 所属的原始类的名字，如 "NSString"
+      classref_t cls;   // 指向原始类对象的指针 (编译时通常是 nil)
+  
+      // 【核心】方法列表
+      struct method_list_t *instanceMethods; // 添加的实例方法列表
+      struct method_list_t *classMethods;    // 添加的类方法列表
+  
+      // 协议列表
+      struct protocol_list_t *protocols; // 实现的协议列表
+  
+      // 属性列表 (注意：这里只记录了 @property 的声明，不包含实例变量)
+      struct property_list_t *instanceProperties; 
+      
+      // ... 其他字段
+  };
+  ```
+
+* **关键点**: 在编译时，原始类（`NSString`）和 `Category`（`NSString+MyAdditions`）是**完全分离**的两个东西。
+
+#### **2. 运行时（App 启动时）**
+
+当你的 App 启动时，Objective-C 的运行时系统会执行一系列的加载和初始化工作。其中一个关键步骤就是**处理所有的 `Category`**。
+
+这个过程大致如下：
+
+1.  **加载镜像**: 运行时会加载程序的所有二进制镜像（包括主程序、动态库、以及所有 `Category` 的编译产物）。
+
+2.  **发现 `Category`**: 运行时会扫描这些镜像，找到所有 `category_t` 结构体。
+
+3.  **附加 `Category` (Attaching Categories)**: 这是最核心的步骤。运行时会遍历所有找到的 `category_t`，然后执行一个类似“合并”的操作。
+    *   **定位原始类**: 运行时根据 `category_t` 中的 `name` 字段，找到它要扩展的那个原始类（比如 `NSString` 类对象）。
+    *   **合并方法**: 运行时会将 `Category` 的**方法列表、协议列表和属性列表**，**“附加”**到原始类的总列表中。
+        *   **方法列表的合并**: 这不是简单的替换，而是将 `Category` 的方法列表**插入**到原始类的方法列表的**最前面**。
+        *   **这就是为什么 `Category` 的方法会“覆盖”原始类方法**：当进行方法查找（消息发送）时，运行时会遍历一个类的方法列表。由于 `Category` 的方法被加在了最前面，所以它会**先被找到并执行**。
+
+---
+
+### 三、`Category` 与 `+load` 和 `+initialize` 的关系
+
+*   **`+load` 方法**:
+    *   `+load` 方法是在**运行时加载类和 `Category` 时**被调用的，它在 `main()` 函数之前执行。
+    *   **原始类和所有它的 `Category`，只要定义了 `+load` 方法，就都会被调用一次**。
+    *   调用的顺序是：先调用原始类的 `+load`，然后按照编译链接的顺序，依次调用每个 `Category` 的 `+load`。
+    *   `+load` 非常适合用来执行一些“一次性”的、依赖于运行时但又需要在所有代码执行前的设置，比如**方法交换 (Method Swizzling)**。
+
+*   **`+initialize` 方法**:
+    *   `+initialize` 是在类**第一次接收到消息时**被调用的（懒加载）。
+    *   如果一个类和它的 `Category` 都实现了 `+initialize`，那么**只有最后一个被编译器链接的 `Category` 的 `+initialize` 方法会生效**，它会“覆盖”掉原始类和其他 `Category` 的实现。这是因为 `+initialize` 本身就是一个普通的方法调用，遵循 `Category` 的方法覆盖规则。
+
+## ***oc内存区域
+
+### 1. 栈区 (Stack)
+
+栈区就像一个自动管理的“临时工作台”，遵循“后进先出”（LIFO, Last-In, First-Out）的原则。
+
+*   **存放内容**：
+    *   **局部变量**：在函数或方法内部定义的非静态变量，例如 `int a;`、`NSString *str;`（这里存放的是 `str` 这个指针本身，而不是 `NSString` 对象实体）。
+    *   **函数/方法的参数**：调用一个方法时，传递给它的参数值或指针。
+    *   **函数/方法的返回地址**：当方法执行完毕后，程序需要知道从哪里继续执行。
+*   **管理方式**：
+    *   **全自动管理**。 当一个方法被调用时，系统会自动在栈顶为它分配一块内存，称为“栈帧”（Stack Frame），用于存放上述内容。当该方法执行完毕返回时，这个栈帧会被自动销毁。
+    *   程序员完全不需要关心这部分内存的分配和释放。。
+
+### 2. 堆区 (Heap)
+
+堆区则像一个需要手动管理的“大型仓库”，用于存放生命周期更长、尺寸更大的数据。
+
+*   **存放内容**：
+    *   所有通过 `alloc`/`new`/`copy`/`mutableCopy` 等方法创建的 **Objective-C 对象**。例如，当你写 `NSString *str = [[NSString alloc] initWithFormat:@"..."];` 时，`str` 指针存放在栈上，但它指向的那个 `NSString` 对象实体则被分配在堆上。
+*   **特点**：
+    *   **空间巨大**：堆的可用空间远大于栈，理论上受限于设备的物理内存和虚拟内存。
+    *   **分配速度较慢**：在堆上分配和回收内存比在栈上要慢，因为系统需要查找合适的空闲内存块，并处理内存碎片等问题。
+    *   **生命周期灵活**：堆上对象的生命周期与引用计数绑定，只要还有强引用指向它，它就会一直存在，可以跨越多个方法和作用域。
+
+### 3. 全局/静态存储区 (Static/Global Storage Area)
+
+这个区域用来存放那些在程序整个运行期间都存在的变量。它内部又可以细分为两个部分：
+
+*   **数据段 (Data Segment)**：
+    *   **存放内容**：**已初始化**的全局变量和静态变量。 例如 `static int i = 10;` 或 `NSString *globalString = @"Hello";`。
+
+### 4. 常量存储区 (Constant Storage Area)
+
+这个区域用来存放常量，通常是只读的。
+
+*   **存放内容**：
+    *   **字符串常量**。例如，你写的 `@"Hello, World!"`，这个字符串本身就存放在这里。
+    *   其他一些编译时就能确定的常量。
+*   **特点**：
+    *   **只读**：这块内存区域通常是受保护的，尝试修改它会导致程序崩溃。
+    *   **共享**：相同的字符串常量在内存中通常只有一份拷贝，以节约空间。
+
+### 5. 代码区 (Code/Text Section)
+
+这个区域存放程序要执行的二进制代码。
+
+*   **存放内容**：
+
+    *   编译后的**函数和方法的机器指令**。
 
 ## 如何扩大一个button的响应范围
 
@@ -934,11 +1624,7 @@ for (MyDataModel *model in dataModels) {
 *   **性能开销大：** 消息转发本身的开销就比直接的方法调用要大。对所有方法都进行hook，会显著影响App的整体性能，尤其是在频繁调用的方法上。
 *   **实现复杂：** 需要处理很多边界情况，比如结构体返回值、与系统其他hook的冲突、多线程安全等。
 
-## 聊聊property
 
-一种语法糖
-
-**`@property` 本质上是一个编译器指令，它会自动为你生成一个用于存储数据的私有实例变量（`ivar`），以及一套标准的、遵循你指定内存管理规则（如`strong`或`copy`）的 `getter` 和 `setter` 方法，从而让你能以“点语法”（`object.property`）安全地访问这个变量。**
 
 ## atomic是如何实现原子性的
 
@@ -1253,47 +1939,6 @@ objc_autoreleasePoolPop(pool);
 
 * 一种根据cpu架构自适应的float，CGfloat在32位cpu下就是float，在64位cpu下会变成double
 * 具体底层实现 是通过条件编译
-
-## ？category能不能添加property
-
-这是一个非常经典且重要的 Objective-C 面试题，答案是“**可以，但又不完全可以**”，需要分两个层面来精确回答。
-
-**简短的答案是：**
-
-> 你**可以**在 `Category` 的 `@interface` 中声明 `@property`，但这只会为你生成 **getter 和 setter 方法的声明**。它**不会**自动为你生成实例变量（ivar），也**不会**自动为你合成 getter/setter 方法的实现。你需要通过**关联对象（Associated Objects）**来手动实现这些方法的背后存储。
-
----
-
-### **详细的、分层次的回答**
-
-#### **第一步：回答“可不可以”**
-
-“是的，我们**可以在 `Category` 中声明 `@property`**。从语法上讲，这是完全允许的。”
-
-```objc
-// UIView+MyAdditions.h
-#import <UIKit/UIKit.h>
-
-@interface UIView (MyAdditions)
-
-// 语法上完全正确
-@property (nonatomic, strong) NSString *myCustomID;
-
-@end
-```
----
-
-### **第二步：解释“为什么行为不同”，即 `@dynamic` 的隐式行为**
-
-“在 `Category` 中声明一个 `@property`，编译器只会为我们做一件事：**自动生成 `setMyCustomID:` 和 `myCustomID` 这两个方法的声明**。”
-
-“它**不会**做以下两件在常规类中会自动做的事：”
-1.  **不会自动生成实例变量**: “它不会为我们生成一个 `_myCustomID` 这样的下划线实例变量。这是因为 `Category` 的底层结构 `category_t` 中，根本就没有空间来存储实例变量的信息。一个类的内存布局在编译时就已经确定了，`Category` 是在运行时才被附加到类上的，它不能在运行时去改变一个类已经固化的内存大小和布局。”
-2.  **不会自动合成存取方法**: “由于没有实例变量可以去存取，编译器也**不会**为我们自动合成 `setMyCustomID:` 和 `myCustomID` 这两个方法的**实现**。”
-
-“实际上，在 `Category` 中声明 `@property`，就等价于你在这个 `Category` 的 `@implementation` 中隐式地写下了 **`@dynamic myCustomID;`**。它是在告诉编译器：‘这两个方法的实现，我会在运行时通过其他方式提供，你不用管了。’”
-
-
 
 ## catgory和extension
 
@@ -2055,56 +2700,7 @@ Objective-C 的设计哲学是“一切皆对象”，消息发送是其核心�
 *   **`isa` 链 (纵向)**: `实例` -> `类` -> `元类` -> `根元类`。这条链用于**消息发送**时查找方法的实现。调用实例方法时，从“类”开始找；调用类方法时，从“元类”开始找。
 *   **`superclass` 链 (横向)**: `子类` -> `父类` -> `NSObject` -> `nil`。这条链用于**继承**。当在本类的方法列表中找不到方法时，会沿着这条链向上查找。
 
-## oc内存区域
-
-### 1. 栈区 (Stack)
-
-栈区就像一个自动管理的“临时工作台”，遵循“后进先出”（LIFO, Last-In, First-Out）的原则。
-
-*   **存放内容**：
-    *   **局部变量**：在函数或方法内部定义的非静态变量，例如 `int a;`、`NSString *str;`（这里存放的是 `str` 这个指针本身，而不是 `NSString` 对象实体）。
-    *   **函数/方法的参数**：调用一个方法时，传递给它的参数值或指针。
-    *   **函数/方法的返回地址**：当方法执行完毕后，程序需要知道从哪里继续执行。
-*   **管理方式**：
-    *   **全自动管理**。 当一个方法被调用时，系统会自动在栈顶为它分配一块内存，称为“栈帧”（Stack Frame），用于存放上述内容。当该方法执行完毕返回时，这个栈帧会被自动销毁。
-    *   程序员完全不需要关心这部分内存的分配和释放。。
-
-### 2. 堆区 (Heap)
-
-堆区则像一个需要手动管理的“大型仓库”，用于存放生命周期更长、尺寸更大的数据。
-
-*   **存放内容**：
-    *   所有通过 `alloc`/`new`/`copy`/`mutableCopy` 等方法创建的 **Objective-C 对象**。例如，当你写 `NSString *str = [[NSString alloc] initWithFormat:@"..."];` 时，`str` 指针存放在栈上，但它指向的那个 `NSString` 对象实体则被分配在堆上。
-*   **特点**：
-    *   **空间巨大**：堆的可用空间远大于栈，理论上受限于设备的物理内存和虚拟内存。
-    *   **分配速度较慢**：在堆上分配和回收内存比在栈上要慢，因为系统需要查找合适的空闲内存块，并处理内存碎片等问题。
-    *   **生命周期灵活**：堆上对象的生命周期与引用计数绑定，只要还有强引用指向它，它就会一直存在，可以跨越多个方法和作用域。
-
-### 3. 全局/静态存储区 (Static/Global Storage Area)
-
-这个区域用来存放那些在程序整个运行期间都存在的变量。它内部又可以细分为两个部分：
-
-*   **数据段 (Data Segment)**：
-    *   **存放内容**：**已初始化**的全局变量和静态变量。 例如 `static int i = 10;` 或 `NSString *globalString = @"Hello";`。
-
-### 4. 常量存储区 (Constant Storage Area)
-
-这个区域用来存放常量，通常是只读的。
-
-*   **存放内容**：
-    *   **字符串常量**。例如，你写的 `@"Hello, World!"`，这个字符串本身就存放在这里。
-    *   其他一些编译时就能确定的常量。
-*   **特点**：
-    *   **只读**：这块内存区域通常是受保护的，尝试修改它会导致程序崩溃。
-    *   **共享**：相同的字符串常量在内存中通常只有一份拷贝，以节约空间。
-
-### 5. 代码区 (Code/Text Section)
-
-这个区域存放程序要执行的二进制代码。
-
-*   **存放内容**：
-    
-    *   编译后的**函数和方法的机器指令**。
+*   *   
     
 
 ### 总结与示例
@@ -3446,83 +4042,7 @@ static MyManager *instance = nil;
 * 系统会维护一个弱引用的map，key是对象的地址，value是弱引用指针的地址数组，当一个对象被销毁时，会去查这个对象在不在表里，如果在，就遍历value，将弱引用指针全部置为nil。
 * 所以当你用weak指针指向一个对象的时候，系统也会自动的将你这个weak指针加到这个表里。
 
-## category的原理
-
-好的，`Category` (分类) 是 Objective-C 语言中一个极其强大、灵活且独特的特性。理解它的原理，对于深入掌握 Objective-C 的动态特性和许多常见框架（如 Foundation 中的 `NSObject+AssociatedObject`）的设计思想至关重要。
-
-简单来说，`Category` 的核心作用是：**在不修改原始类源代码、也不知道其内部实现的情况下，为这个类动态地添加新的方法。**
-
----
-
-### 一、`Category` 能做什么，不能做什么？
-
-在深入原理之前，我们先明确它的能力边界：
-
-**能做到的：**
-1.  **添加实例方法**: 这是最主要、最常见的用途。可以为一个已存在的类（甚至是你没有源码的系统类，如 `NSString`）添加新的功能。
-2.  **添加类方法**: 同样可以为类本身添加新的方法。
-3.  **实现协议**: 可以让一个类遵循某个新的协议，并实现协议中定义的方法。
-4.  **拆分实现**: 将一个庞大的类的实现，拆分到多个不同的 `.m` 文件中，以提高代码的组织性和可维护性。
-
----
-
-### 二、`Category` 的编译与加载原理
-
-`Category` 的魔法，完全是在**运行时 (Runtime)** 才真正展现的。
-
-#### **1. 编译时**
-
-*   当你编译一个 `Category` 文件时（比如 `NSString+MyAdditions.m`），编译器会把它编译成一个独立的二进制文件。
-*   在编译产物中，`Category` 被表示为一个名为 `category_t` 的 C 结构体。这个结构体里包含了关于这个 `Category` 的所有信息：
-    ```c
-    struct category_t {
-        const char *name; // Category 所属的原始类的名字，如 "NSString"
-        classref_t cls;   // 指向原始类对象的指针 (编译时通常是 nil)
-    
-        // 【核心】方法列表
-        struct method_list_t *instanceMethods; // 添加的实例方法列表
-        struct method_list_t *classMethods;    // 添加的类方法列表
-    
-        // 协议列表
-        struct protocol_list_t *protocols; // 实现的协议列表
-    
-        // 属性列表 (注意：这里只记录了 @property 的声明，不包含实例变量)
-        struct property_list_t *instanceProperties; 
-        
-        // ... 其他字段
-    };
-    ```
-*   **关键点**: 在编译时，原始类（`NSString`）和 `Category`（`NSString+MyAdditions`）是**完全分离**的两个东西。
-
-#### **2. 运行时（App 启动时）**
-
-当你的 App 启动时，Objective-C 的运行时系统会执行一系列的加载和初始化工作。其中一个关键步骤就是**处理所有的 `Category`**。
-
-这个过程大致如下：
-
-1.  **加载镜像**: 运行时会加载程序的所有二进制镜像（包括主程序、动态库、以及所有 `Category` 的编译产物）。
-
-2.  **发现 `Category`**: 运行时会扫描这些镜像，找到所有 `category_t` 结构体。
-
-3.  **附加 `Category` (Attaching Categories)**: 这是最核心的步骤。运行时会遍历所有找到的 `category_t`，然后执行一个类似“合并”的操作。
-    *   **定位原始类**: 运行时根据 `category_t` 中的 `name` 字段，找到它要扩展的那个原始类（比如 `NSString` 类对象）。
-    *   **合并方法**: 运行时会将 `Category` 的**方法列表、协议列表和属性列表**，**“附加”**到原始类的总列表中。
-        *   **方法列表的合并**: 这不是简单的替换，而是将 `Category` 的方法列表**插入**到原始类的方法列表的**最前面**。
-        *   **这就是为什么 `Category` 的方法会“覆盖”原始类方法**：当进行方法查找（消息发送）时，运行时会遍历一个类的方法列表。由于 `Category` 的方法被加在了最前面，所以它会**先被找到并执行**。
-
----
-
-### 三、`Category` 与 `+load` 和 `+initialize` 的关系
-
-*   **`+load` 方法**:
-    *   `+load` 方法是在**运行时加载类和 `Category` 时**被调用的，它在 `main()` 函数之前执行。
-    *   **原始类和所有它的 `Category`，只要定义了 `+load` 方法，就都会被调用一次**。
-    *   调用的顺序是：先调用原始类的 `+load`，然后按照编译链接的顺序，依次调用每个 `Category` 的 `+load`。
-    *   `+load` 非常适合用来执行一些“一次性”的、依赖于运行时但又需要在所有代码执行前的设置，比如**方法交换 (Method Swizzling)**。
-
-*   **`+initialize` 方法**:
-    *   `+initialize` 是在类**第一次接收到消息时**被调用的（懒加载）。
-    *   如果一个类和它的 `Category` 都实现了 `+initialize`，那么**只有最后一个被编译器链接的 `Category` 的 `+initialize` 方法会生效**，它会“覆盖”掉原始类和其他 `Category` 的实现。这是因为 `+initialize` 本身就是一个普通的方法调用，遵循 `Category` 的方法覆盖规则。
+*   *   
 
 ## 子线程中如何管理对象的生命周期
 
@@ -6243,382 +6763,6 @@ iOS 中的 Crash 大致可以分为两大类：**Mach 异常（底层内核级�
     [topConstraint uninstall]; // 单独移除这条约束
     ```
 
-## MVMM
-
-好的，这是一个非常核心的架构设计问题。我们不仅要理解 MVC 和 MVVM 的理论区别，更重要的是能通过代码来直观地感受它们在**职责划分、代码组织和可测试性**上的巨大差异。
-
-我们将以一个非常简单的“登录”场景为例，分别用 MVC 和 MVVM 来实现，让你能清晰地看到对比。
-
-**场景需求**:
-*   界面上有两个输入框：用户名（`username`）和密码（`password`）。
-*   一个登录按钮（`loginButton`）。
-*   当用户名和密码都输入内容后，登录按钮才可用。
-*   点击登录按钮，模拟一个网络请求，然后根据结果显示成功或失败的提示。
-
----
-
-### **MVC (Model-View-Controller) 模式实现**
-
-在经典的 MVC 模式中，`Controller` 是一个“大总管”，它承担了几乎所有的“胶水代码”和业务逻辑。
-
-#### **1. Model (`LoginModel.h/m`)**
-模型非常简单，只负责定义数据结构。
-```objc
-// LoginModel.h
-@interface LoginModel : NSObject
-@property (nonatomic, copy) NSString *username;
-@property (nonatomic, copy) NSString *password;
-@end
-```
-
-#### **2. View (`LoginViewController` 的 `view`)**
-视图层就是 `LoginViewController` 的 `view` 以及其上的 `UITextField` 和 `UIButton`。它本身没有逻辑。
-
-#### **3. Controller (`LoginViewController.h/m`)**
-`Controller` 是所有逻辑的中心。
-
-```objc
-// LoginViewController.m
-#import "LoginViewController.h"
-#import "LoginModel.h"
-
-@interface LoginViewController () <UITextFieldDelegate>
-@property (nonatomic, strong) UITextField *usernameField;
-@property (nonatomic, strong) UITextField *passwordField;
-@property (nonatomic, strong) UIButton *loginButton;
-@property (nonatomic, strong) LoginModel *model;
-@end
-
-@implementation LoginViewController
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    
-    self.model = [[LoginModel alloc] init];
-    
-    // --- View 的创建和布局 ---
-    [self setupViews];
-    
-    // --- Controller 承担了所有的事件处理和逻辑 ---
-    [self.usernameField addTarget:self action:@selector(textFieldDidChange:) forControlEvents:UIControlEventEditingChanged];
-    [self.passwordField addTarget:self action:@selector(textFieldDidChange:) forControlEvents:UIControlEventEditingChanged];
-    [self.loginButton addTarget:self action:@selector(loginButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
-    
-    // --- Controller 承担了初始状态的设置 ---
-    [self updateLoginButtonState];
-}
-
-// 1. 事件处理：监听 TextField 的变化
-- (void)textFieldDidChange:(UITextField *)textField {
-    if (textField == self.usernameField) {
-        self.model.username = textField.text;
-    } else if (textField == self.passwordField) {
-        self.model.password = textField.text;
-    }
-    
-    // 2. 业务逻辑：根据 Model 的状态更新 View
-    [self updateLoginButtonState];
-}
-
-// 3. 业务逻辑：更新登录按钮的可用状态
-- (void)updateLoginButtonState {
-    BOOL isUsernameValid = self.model.username.length > 0;
-    BOOL isPasswordValid = self.model.password.length > 0;
-    self.loginButton.enabled = isUsernameValid && isPasswordValid;
-    self.loginButton.backgroundColor = self.loginButton.enabled ? [UIColor blueColor] : [UIColor grayColor];
-}
-
-// 4. 事件处理 & 网络逻辑：处理登录按钮点击
-- (void)loginButtonTapped:(UIButton *)sender {
-    NSLog(@"开始登录，用户名: %@, 密码: %@", self.model.username, self.model.password);
-    
-    // 模拟网络请求
-    [self showLoadingIndicator];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [self hideLoadingIndicator];
-        // 模拟成功
-        if ([self.model.username isEqualToString:@"admin"] && [self.model.password isEqualToString:@"123"]) {
-            [self showAlertWithTitle:@"成功" message:@"登录成功！"];
-        } else {
-            [self showAlertWithTitle:@"失败" message:@"用户名或密码错误"];
-        }
-    });
-}
-// ... 省略 setupViews, showAlertWithTitle, showLoadingIndicator 等 UI 代码 ...
-@end
-```
-
-**MVC 的问题在这里体现得淋漓尽致：**
-*   **Massive View Controller (臃肿的视图控制器)**: `LoginViewController` 做了太多事！它既要负责创建和布局 `View`，又要监听 `View` 的事件，还要更新 `Model`，同时处理业务逻辑（按钮是否可用），甚至还包含了网络请求和弹窗提示。
-*   **耦合度高**: `View` (TextField, Button) 和 `Controller` 紧密耦合。`Model` 和 `Controller` 也紧密耦合。
-*   **可测试性差**: 几乎所有的逻辑都在 `ViewController` 里。你怎么去测试“按钮可用性”这个逻辑？你必须创建一个完整的 `LoginViewController` 实例，还要给它添加 `View`，然后模拟文本输入... 这非常困难。
-
----
-
-### **MVVM (Model-View-ViewModel) 模式实现**
-
-MVVM 的核心是引入了一个新的角色：`ViewModel`。它的任务是**从 `Controller` 中抽离出“展示逻辑”和“状态”**。
-
-#### **1. Model (`LoginModel.h/m`)**
-保持不变。
-
-#### **2. View (`LoginViewController` 的 `view`)**
-保持不变，但它的**数据源和事件处理者**将变成 `ViewModel`。
-
-#### **3. ViewModel (`LoginViewModel.h/m`)**
-这是 MVVM 的灵魂。它是一个纯粹的 `NSObject`，不包含任何 `UIKit` 的东西。
-
-```objc
-// LoginViewModel.h
-#import "LoginModel.h"
-
-@interface LoginViewModel : NSObject
-
-// --- 属性：暴露给 View 的状态 ---
-@property (nonatomic, copy) NSString *username;
-@property (nonatomic, copy) NSString *password;
-
-// --- 属性：经过处理后，可以直接被 View 绑定的状态 ---
-@property (nonatomic, assign, readonly) BOOL isLoginButtonEnabled;
-@property (nonatomic, strong, readonly) UIColor *loginButtonColor;
-@property (nonatomic, copy, readonly) NSString *statusText;
-
-// --- Block 回调：用于通知 View 发生了变化 ---
-@property (nonatomic, copy) void (^loginStateDidChange)(LoginViewModel *viewModel);
-
-// --- 方法：暴露给 View 的行为 ---
-- (void)login;
-
-@end
-```
-
-```objc
-// LoginViewModel.m
-@implementation LoginViewModel
-
-- (instancetype)init {
-    self = [super init];
-    if (self) {
-        // 初始化状态
-        [self updateLoginState];
-    }
-    return self;
-}
-
-// 1. 当输入变化时，更新内部状态
-- (void)setUsername:(NSString *)username {
-    _username = username;
-    [self updateLoginState];
-}
-
-- (void)setPassword:(NSString *)password {
-    _password = password;
-    [self updateLoginState];
-}
-
-// 2. 核心的“展示逻辑”，更新可绑定的属性
-- (void)updateLoginState {
-    BOOL isUsernameValid = self.username.length > 0;
-    BOOL isPasswordValid = self.password.length > 0;
-    
-    // 更新可以直接被 View 使用的状态
-    _isLoginButtonEnabled = isUsernameValid && isPasswordValid;
-    _loginButtonColor = _isLoginButtonEnabled ? [UIColor blueColor] : [UIColor grayColor];
-    
-    // 通过回调通知 View 刷新
-    if (self.loginStateDidChange) {
-        self.loginStateDidChange(self);
-    }
-}
-
-// 3. 核心的“业务逻辑”
-- (void)login {
-    NSLog(@"ViewModel 开始登录，用户名: %@, 密码: %@", self.username, self.password);
-    
-    _statusText = @"正在登录...";
-    if (self.loginStateDidChange) { self.loginStateDidChange(self); }
-
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if ([self.username isEqualToString:@"admin"] && [self.password isEqualToString:@"123"]) {
-            self->_statusText = @"登录成功！";
-        } else {
-            self->_statusText = @"用户名或密码错误";
-        }
-        if (self.loginStateDidChange) { 
-          self.loginStateDidChange(self); 
-        }
-    });
-}
-@end
-```
-
-#### **4. Controller (`LoginViewController.h/m`)**
-`Controller` 现在变得极其“苗条”。它的唯一职责就是**创建并持有 `View` 和 `ViewModel`，并把它们“绑定”在一起**。
-
-```objc
-// LoginViewController.m (MVVM version)
-#import "LoginViewController.h"
-#import "LoginViewModel.h"
-
-@interface LoginViewController ()
-@property (nonatomic, strong) UITextField *usernameField;
-@property (nonatomic, strong) UITextField *passwordField;
-@property (nonatomic, strong) UIButton *loginButton;
-@property (nonatomic, strong) UILabel *statusLabel; // 用于显示状态
-@property (nonatomic, strong) LoginViewModel *viewModel;
-@end
-
-@implementation LoginViewController
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    
-    self.viewModel = [[LoginViewModel alloc] init];
-    
-    [self setupViews];
-    
-    // --- Controller 唯一的核心职责：数据绑定 (Data Binding) ---
-    [self bindViewModel];
-}
-
-- (void)bindViewModel {
-    // 1. View -> ViewModel 的绑定
-    [self.usernameField addTarget:self action:@selector(usernameDidChange:) forControlEvents:UIControlEventEditingChanged];
-    [self.passwordField addTarget:self action:@selector(passwordDidChange:) forControlEvents:UIControlEventEditingChanged];
-    [self.loginButton addTarget:self.viewModel action:@selector(login) forControlEvents:UIControlEventTouchUpInside];
-    
-    // 2. ViewModel -> View 的绑定 (通过 Block 回调)
-    __weak typeof(self) weakSelf = self;
-    self.viewModel.loginStateDidChange = ^(LoginViewModel *viewModel) {
-        // 当 ViewModel 的状态改变时，这个 block 会被调用
-        // Controller 在这里把 ViewModel 的新状态，应用到 View 上
-        weakSelf.loginButton.enabled = viewModel.isLoginButtonEnabled;
-        weakSelf.loginButton.backgroundColor = viewModel.loginButtonColor;
-        weakSelf.statusLabel.text = viewModel.statusText;
-    };
-    
-    // 3. 触发一次初始绑定
-    self.viewModel.loginStateDidChange(self.viewModel);
-}
-
-// 事件处理，只负责将 View 的变化传递给 ViewModel
-- (void)usernameDidChange:(UITextField *)textField {
-    self.viewModel.username = textField.text;
-}
-
-- (void)passwordDidChange:(UITextField *)textField {
-    self.viewModel.password = textField.text;
-}
-// ... 省略 setupViews ...
-@end
-```
-又或者用kvo更新view的状态
-
-```objc
-// LoginViewController.m
-
-- (void)bindViewModel {
-    // 注册观察者
-    [self.viewModel addObserver:self forKeyPath:@"isLoginButtonEnabled" options:NSKeyValueObservingOptionNew context:nil];
-    [self.viewModel addObserver:self forKeyPath:@"loginButtonColor" options:NSKeyValueObservingOptionNew context:nil];
-    [self.viewModel addObserver:self forKeyPath:@"statusText" options:NSKeyValueObservingOptionNew context:nil];
-    
-    // ... View -> ViewModel 的绑定不变 ...
-}
-
-// 实现观察者方法
-- (void)observeValueForKeyPath:(NSString *)keyPath 
-                      ofObject:(id)object 
-                        change:(NSDictionary<NSKeyValueChangeKey,id> *)change 
-                       context:(void *)context {
-    if (object == self.viewModel) {
-        // 在这里根据 keyPath 更新对应的 UI
-        if ([keyPath isEqualToString:@"isLoginButtonEnabled"]) {
-            self.loginButton.enabled = self.viewModel.isLoginButtonEnabled;
-        } else if ([keyPath isEqualToString:@"loginButtonColor"]) {
-            self.loginButton.backgroundColor = self.viewModel.loginButtonColor;
-        } else if ([keyPath isEqualToString:@"statusText"]) {
-            self.statusLabel.text = self.viewModel.statusText;
-        }
-    }
-}
-
-- (void)dealloc {
-    // 必须移除观察者
-    [self.viewModel removeObserver:self forKeyPath:@"isLoginButtonEnabled"];
-    [self.viewModel removeObserver:self forKeyPath:@"loginButtonColor"];
-    [self.viewModel removeObserver:self forKeyPath:@"statusText"];
-}
-```
-
-#### 问题一：“请解释一下你理解的MVVM是什么？”
-
-**优秀回答 (展现深度和思考)：**
-“MVVM是一种旨在**分离用户界面（View）和业务逻辑/状态（ViewModel）**的架构模式。它的核心思想是解决苹果官方MVC中ViewController过于臃肿（Massive View Controller）的问题。”
-
-“在我看来，MVVM可以这样理解：”
-*   **Model:** 和MVC中的一样，是纯粹的数据模型，负责定义数据结构和提供数据。
-*   **View/ViewController:** 它的职责被大大简化，只负责两件事：**UI的布局和渲染**，以及**将用户的操作（如点击）转发给ViewModel**。它本身不包含任何业务逻辑。在iOS中，`UIViewController` 和 `UIView` 都属于View层。
-*   **ViewModel:** 这是MVVM的精髓。它是一个**专门为View服务的对象**。它从Model获取原始数据，然后进行加工处理，转换成View可以直接展示的**状态和数据**（比如把Date对象格式化成"2023-10-27"这样的字符串）。同时，它也提供命令（Command）来响应View转发过来的用户操作。
-
-“最关键的一点是，**ViewModel不直接持有View的引用**。它们之间通过**数据绑定（Data Binding）**机制进行通信，实现了View和ViewModel的彻底解耦，这为单元测试带来了巨大的便利。”
-
-> **面试官追问点：** 为什么ViewModel不应该持有View？（答案：为了解耦和可测试性。一旦持有View，ViewModel就依赖了UIKit，无法进行脱离UI的单元测试，也容易造成循环引用。）
-
----
-
-#### 问题二：“MVVM和MVC相比，有什么具体的优缺点？”
-
-**普通回答：**
-“MVVM的优点是解耦、可测试性好。缺点是对于简单页面，会增加一些类和复杂度。”
-
-**优秀回答 (结合具体痛点和解决方案)：**
-“MVVM最大的优点是它精准地解决了苹果MVC架构下的**‘Massive View Controller’（重量级视图控制器）**问题。在MVC中，大量的业务逻辑、网络请求、数据加工代码都堆在ViewController里，导致其非常臃肿且难以测试。”
-
-“具体来说，MVVM的优势体现在：”
-1.  **高度解耦 (High Decoupling):** View和ViewModel通过数据绑定通信，彼此没有直接依赖。ViewModel也不知道展示它数据的是`UILabel`还是`UITextView`，它只负责输出“状态”。这使得更换UI变得非常容易。
-2.  **极高的可测试性 (Excellent Testability):** 这是MVVM最核心的优势。因为ViewModel是一个**纯粹的Swift/Objective-C对象**，它不依赖任何UIKit/SwiftUI的组件。所以我们可以非常轻松地在单元测试环境中实例化一个ViewModel，给它输入，然后断言它的输出是否符合预期，测试覆盖率可以做得非常高。
-3.  **职责分离 (Separation of Concerns):** UI设计师可以专注于View层，而业务逻辑开发者可以专注于ViewModel层，两者可以并行工作，互不干扰。
-
----
-
-#### 问题三：“你通常如何实现View和ViewModel之间的数据绑定？”
-
-**普通回答：**
-
-1.  **KVO (Key-Value Observing):** 这是Foundation框架提供的传统机制。可以让一个对象观察另一个对象的属性变化。虽然能用，但API比较古老，语法不直观，且需要注意移除观察者，否则容易导致崩溃。
-2.  **闭包/属性观察者 (简单场景):** 对于简单的单向数据流，我们也可以在ViewModel中定义一个闭包，比如`var onDataUpdate: (() -> Void)?`。当数据变化时，调用这个闭包。ViewController在初始化ViewModel时，将UI更新的代码赋给这个闭包。这种方式最轻量，但对于复杂交互就不够用了。
-
-这是一个关于 iOS/macOS 架构模式中对象持有（引用）关系的经典问题。理解这些关系对于避免内存泄漏（尤其是循环引用）至关重要。
-
-## MVC (Model-View-Controller) 中的持有关系
-
-在 Apple 平台的传统 MVC 模式中，对象之间的关系通常是**单向强持有**和**双向弱引用**的结合。
-
-| 对象                    | 持有谁？              | 被谁持有？                                                   | 关系类型 | 说明                                                         |
-| ----------------------- | --------------------- | ------------------------------------------------------------ | -------- | ------------------------------------------------------------ |
-| **VC (ViewController)** | **View** (强持有)     | **Navigation Controller** (强持有), **Tab Bar Controller** (强持有), **父 VC** (强持有) | **强**   | VC 是 View 的“拥有者”，生命周期与 View 紧密关联。            |
-| **View**                | **Subviews** (强持有) | **VC** (强持有)                                              | **强**   | View 通常不持有任何其他对象，其生命周期由其父 View 或 VC 控制。 |
-| **Model**               | (不持有其他架构对象)  | **VC** (强持有) 或 **其他服务层** (强持有)                   | **强**   | Model 是数据对象，由 VC 或数据管理者持有。                   |
-| **VC**                  | **Model** (强持有)    | **Model** (无，或弱引用 `delegate`)                          | **强**   | VC 通常强持有它需要展示的数据 Model。                        |
-| **Model**               | **VC**                | VC (弱引用 `delegate`)                                       | **弱**   | 如果 Model 需要通知 VC 数据变化，会通过 `delegate` 模式，通常是**弱引用**，以避免循环引用。 |
-
-### MVC 总结
-
-- **VC ↔ View：** VC 强持有 View（UIKit/AppKit 自动设置），View 不持有 VC。
-- **VC ↔ Model：** VC 强持有 Model。Model 如果需要反向通信，则对 VC 采用**弱引用 (`weak`) 的 Delegate**。
-
-## MVVM (Model-View-ViewModel) 中的持有关系
-
-### MVVM 总结
-
-- **VC → ViewModel：** **单向强持有**。VC 强持有 ViewModel。
-- **ViewModel → VC/View：** **无直接持有**。通过**数据绑定**（通知机制）进行通信。如果使用闭包或回调，必须使用 **`[weak self]`** 来避免循环引用。
-
-**核心目标：** **ViewModel 必须独立于 View 的生命周期。** 当 View/VC 被销毁时，它对 ViewModel 的强引用解除，ViewModel 也应被销毁。
-
-
-
 ## 软件设计原则
 
 ### 1. SOLID 原则
@@ -7321,66 +7465,6 @@ NSNumber *status = [response blp_numberValueForKey:@"status"];   // 期望得到
 ```
 它们的安全策略主要就是**类型守门**：**“是你要的类型，我就给你；不是，就返回 `nil`，绝不含糊。”**
 
-## 为什么ios一定要在主线程操作ui
-
-好的，我们完全抛开比喻，从计算机系统和框架设计的层面来精确解释这个问题。
-
-将UI操作限制在主线程，其根本原因在于**UIKit框架的非线程安全设计**以及**主线程RunLoop在UI渲染和事件处理中所扮演的独一无二的、中心化的角色**。
-
-这可以从以下三个技术层面来理解：
-
----
-
-### 1. UIKit的非线程安全 (Not Thread-Safe)
-
-这是最核心、最底层的约束。
-
-*   **内部状态和数据结构：** 一个UI对象（如`UIView`或`UIViewController`）内部包含了大量的状态和数据结构，例如它的`frame`、`bounds`、`layer`树、子视图数组、约束等。这些内部数据被设计为只能由一个执行上下文（即一个线程）来访问和修改。
-*   **并发修改的风险：** 如果允许两个线程同时操作同一个`UIView`，就会发生竞态条件（Race Condition）。例如：
-    *   **线程A** 正在计算并设置视图的新位置：`view.frame = newFrame;`。这个操作可能涉及多个步骤，比如修改`origin`和`size`的内部变量。
-    *   **线程B** 同时在修改视图的背景色：`view.backgroundColor = [UIColor redColor];`。
-    *   如果操作系统在这两个操作之间切换线程，可能会导致`UIView`的内部数据处于一个不一致的、中间的状态。比如，`frame`的`origin`被更新了，但`size`还没有，此时线程B的修改可能会基于这个不完整的数据进行，最终导致视图损坏、渲染异常甚至程序崩溃。
-*   **为什么不加锁？** 有人会问，为什么苹果不给所有UI对象的操作都加上锁（Lock）来让它变得线程安全？
-    *   **性能开销巨大：** UI操作非常频繁。如果每次修改一个`UILabel`的文字或一个`UIView`的位置都需要进行加锁和解锁，这种同步开销会严重拖慢UI的响应速度，导致界面卡顿。
-    *   **死锁风险：** 在一个复杂的视图层级中，加锁很容易引发死锁（Deadlock）。比如线程A锁住了父视图，想去操作子视图；而线程B同时锁住了子视图，想去操作父视图，两个线程就会互相等待对方释放锁，导致程序完全卡死。
-
-**结论：** 出于性能和复杂度的考量，UIKit从设计之初就选择了“非线程安全”这条路。作为补偿，它提供了一个严格的规则：**所有对UIKit对象的访问都必须在同一个、指定的线程上进行串行化处理，这个线程就是主线程。**
-
----
-
-### 2. 主线程RunLoop：UI更新的唯一调度者
-
-主线程之所以被选中，是因为它运行着一个特殊的`NSRunLoop`（或底层的`CFRunLoop`），这个RunLoop是整个iOS应用UI机制的核心驱动力。
-
-RunLoop的核心作用是管理和调度事件，并与系统的渲染时机进行同步。一个RunLoop周期内，它会执行一个精确的序列：
-
-1.  **处理输入源 (Input Sources):** 首先，它处理来自触摸屏、网络端口等硬件或内核的异步事件。当用户触摸屏幕时，I/O Kit会捕捉到事件，通过Mach Port传递给应用的RunLoop，RunLoop被唤醒并处理这个触摸事件，最终分发到对应的`UIView`。
-
-2.  **处理定时器 (Timers):** 接着，处理所有到期的`NSTimer`事件。
-
-3.  **执行派发的任务:** 执行通过`dispatch_async(dispatch_get_main_queue(), ...)`或`performSelectorOnMainThread:`等方式从其他线程发送过来的代码块。
-
-4.  **调用RunLoop观察者 (Observers):** 这是与UI更新最关键的一步。系统在主线程的RunLoop上注册了多个观察者，它们监听着RunLoop的不同状态。其中一个关键的观察者监听的是`kCFRunLoopBeforeWaiting`（即RunLoop即将进入休眠状态前）的时刻。
-
-5.  **系统级的UI更新事务：**
-    *   当这个观察者被触发时，它会启动一个UI更新的“事务”（Transaction）。
-    *   这个事务会检查整个应用中所有被标记为“脏”（dirty）的视图。当你调用`setNeedsLayout`或`setNeedsDisplay`时，你并没有立即触发重绘，只是给视图打上了一个“脏”标记。
-    *   在这个时间点，系统会依次执行：
-        *   **布局 (Layout):** 调用所有被标记需要重新布局的视图的`layoutSubviews`方法。
-        *   **绘制 (Display/Draw):** 为所有被标记需要重绘的视图调用`drawRect:`方法，将其内容绘制到一块位图（bitmap）上。
-        *   **提交 (Commit):** 将所有视图层级（CALayer tree）的结构和内容变化，打包提交给一个独立的进程——**Render Server**。
-
-6.  **Render Server渲染:** Render Server进程负责将所有应用提交的图层内容进行合成，并根据显示器的垂直同步信号（VSync），在下一次屏幕刷新时将最终的画面显示到屏幕上。
-
-**结论：** 整个UI的布局、绘制、提交过程，都被紧密地集成在主线程RunLoop的特定阶段。如果一个后台线程直接修改UI（比如直接调用`drawRect:`或修改一个CALayer的属性），它就完全绕过了这个由RunLoop驱动的、与显示刷新同步的标准化流程。这会导致：
-
-*   **时机错误：** 更新可能发生在两帧之间，导致画面撕裂。
-*   **数据不同步：** Render Server可能正在读取图层树的数据，而后台线程同时在修改它，导致渲染出损坏或过时的内容。
-
-### 总结
-
-将UI操作限制在主线程，是iOS（及其他主流GUI系统）为了**从根本上解决并发带来的复杂性和不确定性**而做出的关键设计决策。它通过一个**串行化的RunLoop模型**，确保了UI状态的**一致性、可预测性和稳定性**，虽然对开发者提出了一定的规范要求，但极大地简化了UI编程的难度，并为流畅的用户体验提供了坚实的基础。
-
 ## 在init方法里面，设置背景颜色，会生效吗 会生效。为什么会？
 
 是的，你的判断完全正确：**在 `init` 方法里设置背景颜色，会生效。**
@@ -7654,8 +7738,6 @@ NSBlockOperation *operation = [NSBlockOperation blockOperationWithBlock:^{
 
 ## 知道iOS里面有哪些数据存储方法？什么时候该用哪些方法存储？
 
-
-
 ### 方案一：`NSUserDefaults` (或 Swift 中的 `UserDefaults`)
 
 #### 1. 它是什么？
@@ -7858,18 +7940,14 @@ if (deleteSuccess) {
 
 ## Objective-C vs. Java: 深入剖析两大编程语言的核心差异
 
-Objective-C 和 Java 是两种强大的面向对象编程语言，它们在软件开发领域都曾扮演过举足轻重的角色。尽管它们都源于 C 语言的血统并支持面向对象，但在设计哲学、核心机制和应用生态上却存在着根本性的区别。Objective-C 曾是苹果生态系统（iOS 和 macOS）的基石，而 Java 则以其“一次编写，到处运行”的跨平台能力闻名于世，尤其在安卓和企业级应用开发中占据主导地位。
-
-以下是两种语言在几个关键方面的详细对比：
-
 ### 核心机制：消息传递 vs. 方法调用
 
 两者最本质的区别在于对象间的通信方式。
 
-*   **Objective-C：动态的消息传递 (Message Passing)**
+*   **Objective-C：动态的消息传递 **
     Objective-C 继承自 Smalltalk，其核心是消息传递机制。当你执行 `[myObject doSomething]` 时，你实际上是在向 `myObject` 发送一个名为 `doSomething` 的消息。 系统会在运行时才去检查 `myObject` 是否能响应这个消息，并找到对应的方法来执行。 这种动态派发的特性赋予了 Objective-C 极大的灵活性，允许在运行时添加方法、替换方法实现（称为 "swizzling"）等高级操作。
 
-*   **Java：静态的方法调用 (Method Invocation)**
+*   **Java：静态的方法调用 **
     Java 的语法更接近 C++，采用的是方法调用。 当你写下 `myObject.doSomething()` 时，编译器在编译阶段就会检查 `myObject` 的类型，并确认它是否拥有一个名为 `doSomething()` 的方法。 如果没有，编译就会失败。虽然 Java 通过多态也实现了运行时的动态绑定，但其本质仍然是基于编译时确定的方法签名，相比 Objective-C 更为严格和静态。
 
 ### 内存管理：ARC vs. 垃圾回收
@@ -7879,136 +7957,10 @@ Objective-C 和 Java 是两种强大的面向对象编程语言，它们在软�
 *   **Objective-C：自动引用计数 (ARC)**
     现代 Objective-C 使用 ARC (Automatic Reference Counting) 来管理内存。 ARC 是一种编译器特性，它会在编译时自动为代码插入 `retain` (增加引用计数) 和 `release` (减少引用计数) 操作。 当一个对象的引用计数变为零时，其内存就会被立即回收。 这种方式的优点是内存回收的时机非常明确和及时，但缺点是需要开发者手动解决“循环引用”的问题，即两个或多个对象相互强引用，导致它们的引用计数永远不会为零。
 
-*   **Java：垃圾回收 (Garbage Collection - GC)**
+*   **Java：垃圾回收 **
     Java 运行在 Java 虚拟机 (JVM) 之上，由 JVM 内置的垃圾回收器来自动管理内存。 垃圾回收器会定期扫描内存，找出不再被引用的对象并释放它们的空间。 这种方式的优点是完全自动化，开发者无需关心内存的释放，并且能够自动处理循环引用的问题。 缺点是垃圾回收的时机不确定，可能会在某个时间点导致应用短暂的停顿（Stop-The-World）。
 
-## oc编译过程
 
-### 🔹 2. 编译过程（以 `.m` 为例）
-
-### （1）预处理（Preprocessing）
-
-- 处理 `#import`、`#define`、宏替换
-- 生成纯 C/Objective-C 代码，扩展后的临时文件（通常是 `.i`）
-
-命令示例：
-
-```bash
-clang -E main.m -o main.i
-```
-
-------
-
-### （2）编译（Compiling）
-
-- 把 `.i` 转换成 **LLVM IR**（中间语言，类似汇编）
-- 处理语法检查、类型检查
-- 最终生成汇编代码（`.s` 文件）
-
-命令示例：
-
-```bash
-clang -S main.i -o main.s
-```
-
-------
-
-### （3）汇编（Assembling）
-
-- 汇编器把 `.s` 文件转成 **目标文件** `.o`（二进制机器码，但未链接）
-
-命令示例：
-
-```bash
-clang -c main.s -o main.o
-```
-
-------
-
-### （4）链接（Linking）
-
-- 链接所有 `.o` 文件和依赖的 **静态库（.a）**、**动态库（.dylib / framework）**
-- 生成最终可执行文件（Mach-O 格式）
-
-命令示例：
-
-```bash
-clang main.o -framework Foundation -o mai
-```
-
-------
-
-### 🔹 4. 程序运行时
-
-编译完成只是生成可执行文件，真正运行还要依赖：
-
-- **dyld**：动态链接器，加载可执行文件和依赖库
-- **Objective-C runtime**：注册类、方法、Category，支持消息发送、KVO、isa-swizzling 等动态特性
-
-------
-
-### 🔹 总结
-
-Objective-C 的编译流程（和 C 类似）：
-
-```
-源代码 (.m/.h)
-   ↓ 预处理
-.i 文件
-   ↓ 编译 (Clang → LLVM IR → 汇编)
-.s 文件
-   ↓ 汇编
-.o 文件
-   ↓ 链接 (lib + framework)
-Mach-O 可执行文件
-   ↓ (运行时：dyld + ObjC runtime)
-程序启动
-```
-
-`dyld` 主要做以下几件大事：
-
-#### 1. 装载依赖库 (Loading Libraries)
-*   **比喻：** 把所有装家具零件的箱子搬进房间。
-*   **技术解释：** 你的 App 不仅仅包含你写的代码，还依赖很多苹果官方的“零件库”（如 `UIKit`, `Foundation`）和第三方的“零件库”（如 `AFNetworking`）。`dyld` 的第一件事就是找到所有这些必需的库（动态库 `.dylib`），然后把它们全部加载到内存里。
-
-#### 2. Rebase 和 Bind (最重要的环节，也是最耗时的)
-*   **比喻：** 仔细阅读说明书，把螺丝拧到正确的孔里，把 A 板和 B 板连接起来。
-*   **技术解释：** 由于安全机制 **ASLR** (地址空间布局随机化)，你的 App 每次启动时，它和它依赖的库在内存中的地址都是**随机**的。这就导致代码里写死的地址引用全部失效了。
-    *   **Rebase (内部修正):** `dyld` 需要修正 App **内部**的指针。比如，你自己的一个函数要调用你自己的另一个函数，`dyld` 就要计算出它们今天在内存中的新地址，然后把这个调用关系“接上”。
-    *   **Bind (外部绑定):** `dyld` 需要把你 App 的代码和**外部**库的代码“绑定”在一起。这是我们讨论的**核心**。比如，你的代码里调用了 `NSLog()`，`dyld` 必须去 `Foundation` 库里找到 `NSLog` 函数的真实内存地址，然后把你的调用代码指向这个地址。**这个查找和绑定的过程，就是性能瓶颈所在。**
-
-#### 3. 运行初始化代码 (Run Initializers)
-*   **比喻：** 家具组装好后，给里面的电器通上电，让它们自检。
-*   **技术解释：** `dyld` 会执行所有 Objective-C 的 `+load` 方法和 C++ 的静态构造函数。这些代码被要求在 `main` 函数之前必须执行完毕。
-
-当 `dyld` 做完所有这些工作后，它才会调用你熟悉的 `main` 函数，App 的启动流程才进入到你自己可控的部分。
-
----
-
-### 第二部分：这个哈希表的作用是什么？—— “智能眼镜”
-
-现在我们聚焦于 `dyld` 最耗时的环节：**Bind (外部绑定)**。
-
-*   **没有优化前 (视力不好的老花眼师傅):**
-    *   `dyld` 需要绑定 `NSLog`。
-    *   它拿到的是一个**字符串** `"NSLog"`。
-    *   它会在 `Foundation` 库暴露出来的成千上万个符号（函数名、变量名）列表里，进行**字符串比较**，一个一个地找，直到找到匹配 `"NSLog"` 的那一项。
-    *   这个过程在一个大型 App 里要重复**几十万次**。你可以想象一个老花眼师傅，拿着一张有几十万个零件名字的清单，挨个对比，这速度有多慢。
-
-*   **优化后 (戴上智能眼镜的师傅):**
-    这个**完美哈希表**，就是那副为 `dyld` 量身定做的“智能眼镜”。
-
-    **哈希表的作用，就是提供一个“跳过字符串比较”的超高速查找通道。**
-
-    现在，`dyld` 的工作流程变成了：
-    1.  需要绑定 `NSLog`。
-    2.  它不再去进行字符串比较了。它把字符串 `"NSLog"` 喂给“智能眼镜”（完美哈希函数）。
-    3.  “智能眼镜”内部进行了一次超快的数学计算，瞬间告诉师傅：“你要找的东西在**仓库的第 8888 号货架上**！”
-    4.  `dyld` 直接跑到第 8888 号货架，拿到了 `NSLog` 的真实内存地址。
-
-**这个哈希表在这里的核心作用就是：**
-
-**将【极其耗时的字符串查找操作】，替换为【一次恒定时间的、超快的数学计算和数组访问】。**
 
 ## oc中单例怎么实现，原理是什么
 
@@ -8050,13 +8002,13 @@ Objective-C
 
 `dispatch_once` 的底层实现非常巧妙，它利用了原子操作来确保线程安全和只执行一次。
 
-- **原子操作（Atomic Operation）**：在底层，`dispatch_once` 使用原子操作来检查 `onceToken` 的状态。`onceToken` 本质上是一个标记，它的初始状态是“未执行”。
+- **原子操作**：在底层，`dispatch_once` 使用原子操作来检查 `onceToken` 的状态。`onceToken` 本质上是一个标记，它的初始状态是“未执行”。
 - **锁定机制**：当第一个线程进入 `dispatch_once` 时，它会通过原子操作将 `onceToken` 标记为“正在执行”，这会阻止其他线程进入这个代码块。
 - **执行代码块**：第一个线程执行 `sharedInstance = [[super alloc] init];` 这行代码，完成实例的创建。
 - **标记完成**：代码块执行完毕后，`dispatch_once` 会通过原子操作将 `onceToken` 标记为“已执行”。
 - **后续调用**：此后，当任何其他线程再次调用 `dispatch_once` 时，它会检查 `onceToken` 的状态。由于状态已经是“已执行”，它会直接跳过代码块，立即返回已经创建好的 `sharedInstance`。
 
-## 代理模式和通知区别
+## 代理模式和通知中心的区别
 
 ### 代理模式（Delegate Pattern）
 
@@ -8104,8 +8056,6 @@ Objective-C
 4.  **识别`dyld`**: 内核在解析Mach-O文件时，会检查一个特殊的加载命令（Load Command）——`LC_LOAD_DYLINKER`。这个命令告诉内核：“我不是一个完整的、独立的可执行文件，请先加载指定的动态链接器来帮助我运行”。在iOS上，这个链接器就是`/usr/lib/dyld`。
 5.  **加载`dyld`并移交控制权**: 内核加载`dyld`到App的地址空间，然后将**程序的控制权（PC寄存器）**交给`dyld`的入口点。
 
-**从这里开始，`dyld`正式接管了整个启动过程。**
-
 ---
 
 ### **`dyld`的详细工作流程**
@@ -8145,10 +8095,6 @@ Objective-C
 
 ## oc中对一个nil调用方法 会报错吗 那假如这个方法返回值是bool 会返回什么
 
-在 Objective-C (OC) 中，对一个 **`nil` 对象发送消息（调用方法）** 是完全有效的，并且不会导致程序崩溃或抛出异常。这是一个非常重要的特性，也是 OC 和其他一些语言（如 Swift 或 Java）的主要区别之一。
-
-
-
 ### 对 `nil` 调用方法会怎样？
 
 当你对 `nil` 对象调用方法时，运行时（runtime）会默默地忽略这个调用。
@@ -8172,8 +8118,6 @@ Objective-C
    - 如果 `myObject` 是 `nil`，`isValid` 会被赋值为 `NO`。
 
 下面是一个关于布尔类型返回值的具体例子：
-
-Objective-c
 
 ```objective-c
 @interface MyClass : NSObject
@@ -8207,6 +8151,18 @@ int main() {
 ## java基础
 
 ### ***单例手写
+
+### ***Java抽象类和接口的区别
+
+* 单继承和多继承
+* 可以有普通变量和 `static` 变量，接口只能有 `public static final` 变量
+* 可以有**普通方法**和**抽象方法**，Java 8+ 可以有 `default` 方法和 `static` 方法，其他方法都是**抽象的**，default方法子类可以直接用或者重写
+* 适用于**有相同属性或部分实现**的类，适用于**定义行为规范**
+
+### ***抽象类和普通类区别？
+
+* 抽象类可以有抽象方法和普通方法，接口只能有默认方法，抽象方法，静态方法
+* 抽象类是单继承，接口多继承，抽象类可以用来代码复用，接口主要是定义接口规范
 
 ### ***==和equals
 
@@ -8284,18 +8240,6 @@ class Box {
 **单一职责原则**：即一个类应该只负责一项职责
 
 比如说某个类的方法依赖其他类的方法，最好在这个类中只定义类的接口就行，实际用的时候再传，而不是定义的时候就写死了某个实例。
-
-### ***Java抽象类和接口的区别
-
-* 单继承和多继承
-* 可以有普通变量和 `static` 变量，接口只能有 `public static final` 变量
-* 可以有**普通方法**和**抽象方法**，Java 8+ 可以有 `default` 方法和 `static` 方法，其他方法都是**抽象的**，default方法子类可以直接用或者重写
-* 适用于**有相同属性或部分实现**的类，适用于**定义行为规范**
-
-### **抽象类和普通类区别？
-
-* 抽象类可以有抽象方法和普通方法，接口只能有默认方法，抽象方法，静态方法
-* 抽象类是单继承，接口多继承，抽象类可以用来代码复用，接口主要是定义接口规范
 
 ### *什么是泛型？
 
