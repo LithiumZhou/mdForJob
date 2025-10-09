@@ -1137,6 +1137,531 @@ Mach-O 可执行文件
 
     *   编译后的**函数和方法的机器指令**。
 
+## ***cell的重用机制，cell重用的数量由什么决定
+
+```objc
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    
+    // 1. 如果是代码创建的 Cell，注册 Class
+    [self.tableView registerClass:[MyCustomCell class] forCellReuseIdentifier:@"MyCellIdentifier"];
+  
+    self.tableView.dataSource = self;
+    self.tableView.delegate = self;
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    // 假设 self.dataArray 是您的数据源数组
+    return self.dataArray.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    
+    // **核心重用步骤 1: 从重用池中获取 Cell**
+    MyCustomCell *cell = [tableView dequeueReusableCellWithIdentifier:@"MyCellIdentifier" 
+                                                         forIndexPath:indexPath];
+    
+    // **核心重用步骤 2: 配置 Cell 的内容**
+    MyModel *dataItem = self.dataArray[indexPath.row];
+    cell.titleLabel.text = dataItem.title;
+    cell.detailLabel.text = dataItem.detail;
+ 
+    return cell;
+}
+```
+
+## ***uiresponder 和 gester响应区别
+
+它们之间的区别主要在于**事件的类型、处理方式、灵活性和优先级**。
+
+***
+
+### 核心区别对比
+
+| 特性           | **UIResponder（响应者链）**                                  | **UIGestureRecognizer（手势识别器）**                        |
+| :------------- | :----------------------------------------------------------- | :----------------------------------------------------------- |
+| **处理的事件** | **低层级、原始事件：** Touch（触摸）、Motion（摇晃）、Remote Control（远程控制）和 Press（按下）。 | **高层级、抽象事件：** Tap（点按）、Swipe（轻扫）、Pan（平移）、Pinch（捏合）、Long Press（长按）等。 |
+| **实现机制**   | 基于**继承**。任何继承自 `UIResponder` 的对象（如 `UIView`、`UIViewController`、`UIApplication`）都可以通过重写方法来响应事件。 | 基于**代理（Delegate）**和**目标-动作（Target-Action）**模式。作为附加到 `UIView` 上的独立对象来工作。 |
+| **事件流向**   | **事件传递：** 触摸发生后，首先传递给**最顶层的视图**，然后沿着**响应者链**（Responder Chain）向上传递，直到被处理或到达 `UIApplication`。 | **事件拦截：** 在原始 `Touch` 事件到达视图之前，手势识别器会先拦截并分析这些触摸事件。 |
+| **优先级**     | **次级（Default）：** 只有在所有附加的手势识别器**都识别失败（或不关心）**时，原始的 Touch 事件才会传递给视图的 `UIResponder` 方法。 | **最高级（Primary）：** 它们会在 Touch 事件发生时**最先获得处理权**。 |
+| **适用场景**   | 处理**简单的、单个手指的**基本触摸，或自定义事件（如摇晃），以及响应者链中事件的传递。 | 处理**复杂的、多手指的、组合式的**手势操作，实现平移、缩放、旋转等交互。 |
+
+***
+
+### 详细解释
+
+### 1. UIResponder (响应者链)
+
+`UIResponder` 是 iOS 事件处理的基础。
+
+*   **工作方式：** 当用户触摸屏幕时，系统会将一个或多个 `UITouch` 对象封装在一个 `UIEvent` 中，并将其发送给发生触摸的**最合适的视图**（通常是视图层级中最深处的视图）。
+*   **核心方法：** 通过重写以下方法来处理事件：
+    *   `- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event;`
+    *   `- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event;`
+    *   `- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event;`
+    *   `- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event;`
+*   **传递机制：** 如果一个响应者（如一个 `UIView`）不处理这个事件（即它没有在方法末尾调用 `[super touches...]`），事件就会沿着响应者链（通常是向上到它的**父视图**，然后是**视图控制器**，最终到 `UIWindow` 和 `UIApplication`）传递，直到某个对象处理它。
+
+### 2. UIGestureRecognizer (手势识别器)
+
+手势识别器是建立在 `UIResponder` 之上的**更高抽象层**。
+
+*   **工作方式：** 当原始的 `Touch` 事件发生时，`UIGestureRecognizer` 会先拦截这些事件。它会分析一系列连续的触摸（例如两个手指的移动，或者快速的点击）是否符合它所定义的**模式**。
+*   **识别成功：** 一旦识别器确定触摸序列符合某个手势（比如“双击”），它就会将原始触摸**消耗掉**（即不再传递给视图的 `UIResponder` 方法），并触发其绑定的 **Target-Action** 方法来响应手势。
+*   **识别失败：** 如果触摸序列不符合任何附加的手势识别器，系统才会将原始的 `Touch` 事件向下传递，让视图的 `UIResponder` 方法有机会处理。
+
+## ***事件传递和响应链
+
+`hitTest:`的本质是一个递归函数，它的返回值决定了整个查找链的走向。**一旦在递归的任何一层中，有一个子视图的`hitTest:`调用返回了一个非`nil`的对象，那么这个对象就会被逐层向上传递，并成为整个查找过程的最终结果。**
+
+让我们用一个更精确的、伪代码式的算法来描述任何一个`UIView`的`hitTest:withEvent:`方法的内部逻辑：
+
+```objectivec
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    
+    // 步骤 1: 检查自身先决条件
+    // 如果视图隐藏、不允许交互或完全透明，那么它和它的所有子视图都无法响应事件。
+    if (self.hidden || !self.userInteractionEnabled || self.alpha < 0.01) {
+        return nil; // 直接返回 nil，终止这条分支的查找
+    }
+    
+    // 步骤 2: 检查触摸点是否在自己内部
+    // 如果点不在视图的边界内，那么它和它的所有子视图也肯定无法响应。
+    if (![self pointInside:point withEvent:event]) {
+        return nil; // 直接返回 nil，终止这条分支的查找
+    }
+    
+    // 步骤 3: 从后往前（从最上层）遍历子视图，进行递归查找
+    // 这是最关键的一步
+    for (UIView *subview in [self.subviews reverseObjectEnumerator]) {
+        
+        // 坐标转换：将触摸点从当前视图的坐标系转换到子视图的坐标系
+        CGPoint subviewPoint = [self convertPoint:point toView:subview];
+        
+        // 递归调用子视图的 hitTest: 方法
+        UIView *hitTestView = [subview hitTest:subviewPoint withEvent:event];
+        
+        // ----> 核心判断在此 <----
+        // 如果子视图的 hitTest: 方法返回了一个非 nil 的对象，
+        // 这意味着在子视图的层级中已经找到了最合适的响应者。
+        if (hitTestView != nil) {
+            // 那么当前视图的查找任务就完成了，它不需要再检查其他子视图，
+            // 也不需要检查自己。它要做的就是立刻将这个结果向上传递。
+            return hitTestView; 
+        }
+    }
+    
+    // 步骤 4: 如果所有子视图都没有返回结果，那么自己就是响应者
+    // 能执行到这里，说明：
+    // 1. 触摸点在当前视图内部（通过了步骤2）。
+    // 2. 遍历了所有子视图，但它们的 hitTest: 都返回了 nil。
+    // 因此，当前视图就是这次查找的最佳响应者。
+    return self; 
+}
+```
+
+---
+
+### 第一阶段：Hit-Testing (寻找最佳响应者)
+
+当用户触摸屏幕时，系统会产生一个触摸事件（`UIEvent`），并将其加入到当前应用的事件队列中。`UIApplication`会从队列中取出该事件，然后开始寻找处理它的最佳视图。
+
+这个过程的核心方法是 `hitTest:withEvent:`。
+
+#### Hit-Testing 算法流程
+
+1.  **起点**：`UIApplication`将事件传递给`UIWindow`。
+2.  **调用 `hitTest:`**：`UIWindow`调用自己的`hitTest:withEvent:`方法。
+
+`hitTest:withEvent:`方法的内部逻辑大致如下：
+
+**Step A: 检查自身能否响应事件**
+
+*   首先，它会调用`pointInside:withEvent:`方法判断触摸点是否在当前视图的坐标范围内。
+*   如果`pointInside:`返回`NO`（触摸点不在视图内），那么`hitTest:`直接返回`nil`，表示自己和所有子视图都无法响应。
+*   如果`pointInside:`返回`YES`，则继续下一步。
+
+**Step B: 检查子视图**
+
+*   它会**从后往前**（也就是从最上层的子视图到最下层的子视图）遍历自己的所有子视图。
+*   对于每一个子视图，它会先将触摸点的坐标从当前视图转换到子视图的坐标系中，然后以新的坐标点调用该子视图的`hitTest:withEvent:`方法。
+*   **递归**：这个过程会一直递归下去，直到最深层的视图。
+
+**Step C: 返回结果**
+
+*   如果在遍历子视图的过程中，有一个子视图的`hitTest:`方法返回了一个非`nil`的视图对象，那么当前视图的`hitTest:`方法就会**立即停止遍历**，并直接将这个对象返回。这个返回的视图就是所谓的“最佳响应者”（Hit-Test View）。
+*   如果遍历完所有子视图，它们的`hitTest:`方法都返回`nil`，那么就意味着没有子视图能响应这个事件。由于在Step A中已经确认了触摸点在当前视图内，所以当前视图就成为最佳响应者，`hitTest:`方法会返回`self`。
+
+#### 哪些视图会被忽略？
+
+在Hit-Testing过程中，如果一个视图满足以下任何一个条件，它和它的所有子视图都会被直接忽略：
+
+*   `userInteractionEnabled = NO` (用户交互关闭)
+*   `hidden = YES` (视图隐藏)
+*   `alpha < 0.01` (视图基本全透明)
+
+**总结：Hit-Testing就是一个深度优先的递归搜索，目的是找到包含触摸点且在视图层级中最深、最上层的那个视图。**
+
+---
+
+### 第二阶段：Responder Chain (响应者链的事件传递)
+
+一旦Hit-Testing过程找到了最佳响应者（Hit-Test View），事件就会被传递给它，然后事件就进入了响应者链的传递阶段。
+
+#### 什么是响应者链 (Responder Chain)？
+
+响应者链是由一系列能响应事件的`UIResponder`对象组成的链条。`UIView`、`UIViewController`、`UIWindow`、`UIApplication`都是`UIResponder`的子类。
+
+每个`UIResponder`对象都有一个`nextResponder`属性，指向链中的下一个响应者。
+
+#### 事件传递流程
+
+1.  **首个响应者处理**：系统首先将事件（通过`touchesBegan:withEvent:`等方法）传递给Hit-Testing找到的那个**最佳响应者（First Responder）**。
+
+2.  **响应或传递**：
+    *   如果这个First Responder实现了相应的触摸事件处理方法（如`touchesBegan:withEvent:`），它就可以处理这个事件。处理完后，事件传递就此结束。
+    *   如果它想让其他响应者也处理，可以调用`[super touchesBegan:withEvent:]`。
+    *   如果它**没有实现**相应的处理方法，或者在实现中明确调用了`super`的同名方法，那么事件就会沿着`nextResponder`属性，传递给链中的**下一个响应者**。
+
+#### 响应者链的默认传递路径
+
+事件的传递路径通常如下：
+
+1.  **UIView**: 如果一个视图是First Responder，它的`nextResponder`是：
+    *   如果它是某个`UIViewController`的根视图（`self.view`），那么下一个响应者就是这个`UIViewController`。
+    *   否则，它的下一个响应者就是它的**父视图（superview）**。
+
+2.  **UIViewController**: 它的`nextResponder`是它的根视图的父视图（`self.view.superview`）。
+
+3.  **UIWindow**: 它的`nextResponder`是`UIApplication`。
+
+4.  **UIApplication**: 它的`nextResponder`是`AppDelegate`（如果`AppDelegate`继承自`UIResponder`且不是视图、视图控制器或应用本身）。
+
+5.  **最终**：如果事件一路传递到`UIApplication`都无人处理，那么这个事件就会被系统丢弃
+
+---
+
+### 事件响应的三种“拦截”方式
+
+当一个触摸事件（`UIEvent`）通过 **Hit-Testing** 过程找到了最合适的响应视图（我们称之为 Hit-Test View）后，系统会把这个事件交给这个视图，然后就开始了**响应链（Responder Chain）**的旅程。
+
+在这个旅程中，有三道主要的“关卡”可以拦截并处理这个事件。它们的**优先级**通常是：
+
+**第一优先级：手势识别器 (UIGestureRecognizer)**
+**第二优先级：`touchesBegan:` / `touchesMoved:` / `touchesEnded:` 系列方法**
+**第三优先级：`addTarget:` 方式 (只适用于 `UIControl` 及其子类)**
+
+让我们来详细分析每一道关卡。
+
+---
+
+### 第一道关卡 (最高优先级)：手势识别器
+
+在系统准备调用 Hit-Test View 的 `touchesBegan:` 方法**之前**，它会先做一个非常重要的检查：**这个视图以及它的父视图上，有没有附加手势识别器？**
+
+1.  **手势的“偷窥权”**:
+    *   `UIWindow` 在分发触摸事件时，会首先将事件“喂”给所有附加在视图层级中的手势识别器。这给了手势一个“**优先窥探**”事件的机会。
+    *   手势识别器会分析这个触摸事件序列（Began, Moved, Ended），判断它是否符合自己定义的模式（比如单击、双击、长按、拖动）。
+
+2.  **手势成功识别 (状态变为 `Recognized` / `Ended`)**:
+    *   一旦某个手势（比如 `UITapGestureRecognizer`）成功识别出了一个单击手势。
+    *   **默认行为**：
+        1.  它会立即向它的 `target` 发送 `action` 消息。
+        2.  为了不让事件“一事二主”，手势会“**吞掉**”这个事件。它会向视图发送 `touchesCancelled:` 消息，**阻止**视图的 `touchesBegan:` / `touchesEnded:` 方法被调用。
+        3.  因为 `touches` 系列方法没有被调用，所以事件自然**不会**再沿着响应者链向上传递。
+
+3.  **手势识别失败**:
+    *   如果手势分析了触摸事件后，认为不符合它的模式（比如用户是拖动而不是单击），它的状态会变为 `Failed`。
+    *   此时，手势会“放开”这个事件，触摸事件会继续它正常的旅程，去调用视图的 `touchesBegan:` 等方法。
+
+**结论**: **只要一个手势成功识别了事件，默认情况下，`touchesBegan:` 就不会被调用，响应者链的传递也就被“截胡”了。**
+
+*   **可以改变这个默认行为吗？** 可以。`UIGestureRecognizer` 有一个 `cancelsTouchesInView` 属性，如果设置为 `NO`，那么即使手势成功识别，`touches` 系列方法也依然会被调用。
+
+---
+
+### 第二道关卡：重写 `touches` 系列方法
+
+如果一个视图上没有手势，或者手势识别失败了，那么事件就会来到第二道关卡。
+
+1.  Hit-Test View 的 `touchesBegan:withEvent:` 方法会被调用。
+2.  **默认行为**:
+    *   如果你**重写**了这个方法，并在里面处理了事件逻辑，但**没有**调用 `[super touchesBegan:withEvent:]`。
+    *   那么，你就“**消费**”了这个事件。
+    *   事件的传递就此**终止**，它不会再被传递给视图的 `nextResponder`（比如它的父视图或视图控制器）。
+
+3.  **传递事件**:
+    *   如果你在方法的最后调用了 `[super touchesBegan:withEvent:]`。
+    *   那么你就明确地告诉系统：“我的事办完了，现在把这个事件交给我的上级（`nextResponder`）去处理吧。”
+    *   事件就会继续沿着响应者链向上传递。
+
+**结论**: **重写 `touchesBegan:` 并处理事件（且不调用 `super`），确实会阻止事件向父视图传递。**
+
+---
+
+### 第三道关卡：`UIControl` 的 `addTarget:` 机制
+
+这道关卡比较特殊，它只适用于 `UIButton`, `UISlider`, `UITextField` 等继承自 `UIControl` 的控件。
+
+`UIControl` 内部封装了对 `touches` 系列方法的处理，它自己实现了一套完整的触摸跟踪和事件分发机制。
+
+1.  **内部实现**:
+    *   当一个 `UIButton` 收到 `touchesEnded:` 事件时，它会在内部判断这次触摸是否是一次有效的“点击”（比如手指是否在按钮范围内抬起）。
+    *   如果是有效点击，它就会触发 `UIControlEvents.touchUpInside` 事件。
+    *   然后，它会查找所有通过 `addTarget:action:forControlEvents:` 添加的 `target-action` 对，并向它们发送消息。
+
+2.  **与响应者链的关系**:
+    *   `UIControl` 在处理完自己的 `target-action` 逻辑后，**默认不会再将事件传递给它的 `super`**。它认为自己作为专门的交互控件，已经完成了事件的最终处理。
+    *   因此，当你点击一个按钮时，它的 `target-action` 会被触发，但通常情况下，这个按钮的父视图的 `touchesBegan:` 是不会被调用的。
+
+## ***TableView优化，怎么减少卡顿
+
+好的，我们继续深入。掌握了 Cell 的正确复用后，下一个对性能影响最大的因素，就是 **Cell 高度的计算**。
+
+### 方案二：高效计算并缓存 Cell 高度
+
+`UITableView` 在显示内容前，需要知道每个 Cell 的确切高度，以便计算出自己的 `contentSize`、滚动条的位置等信息。如果高度计算过于耗时，就会在滑动时严重拖慢主线程，导致卡顿。
+
+#### 1. 问题的根源：`heightForRowAtIndexPath` 的调用时机
+
+你可能会认为 `-tableView:heightForRowAtIndexPath:` 这个代理方法只会在 Cell 即将出现时才被调用。但事实并非如此：
+
+*   **加载时**：`UITableView` 在第一次加载时，会调用**所有可见 Cell**的 `heightForRowAtIndexPath:`。
+*   **滑动时**：每次滑动，它不仅会为**新出现的 Cell** 调用此方法，还可能为了计算滚动条的比例而调用**大量甚至全部** Cell 的 `heightForRowahoawIndexPath:`。
+
+如果你的高度计算逻辑很复杂（比如基于文本内容动态计算），并且每次都实时计算，那么当列表数据量很大时，性能开销将是巨大的。
+
+#### 2. 优化策略：计算与缓存分离
+
+核心思想是：**不要在 `heightForRowAtIndexPath:` 中进行任何实时计算**。这个方法应该像一个高速的查询接口，只负责从一个已经准备好的地方**读取**高度值。真正的计算应该提前完成，并且结果要被**缓存**起来。
+
+**第一步：将高度计算逻辑移到数据模型（Model）中**
+
+让数据模型自己负责计算其对应内容所需的高度。这样，高度就和数据绑定在了一起，逻辑更清晰。
+
+**`MyDataModel.m`**
+
+```objc
+// Objective-C
+#import <UIKit/UIKit.h>
+
+@implementation MyDataModel
+
+- (CGFloat)cellHeight {
+    // _cellHeight 是在 .h 中声明的属性，用于缓存
+    // 如果已经计算过，直接返回缓存值
+    if (_cellHeight > 0) {
+        return _cellHeight;
+    }
+    
+    // --- 在这里执行复杂的计算逻辑 ---
+    CGFloat height = 0;
+    
+    // 假设有标题、内容和图片
+    height += 10; // 顶部间距
+    
+    // 计算标题高度
+    height += [self.title boundingRectWithSize:CGSizeMake(CELL_CONTENT_WIDTH, CGFLOAT_MAX) 
+                                      options:NSStringDrawingUsesLineFragmentOrigin 
+                                   attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:17]} 
+                                      context:nil].size.height;
+    
+    height += 8; // 标题和内容间距
+    
+    // 计算内容高度
+    height += [self.content boundingRectWithSize:CGSizeMake(CELL_CONTENT_WIDTH, CGFLOAT_MAX) 
+                                        options:NSStringDrawingUsesLineFragmentOrigin 
+                                     attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:14]} 
+                                        context:nil].size.height;
+    
+    if (self.image) {
+        height += 8; // 内容和图片间距
+        height += 150; // 图片固定高度
+    }
+    
+    height += 10; // 底部间距
+    
+    // 将计算结果缓存起来
+    _cellHeight = height;
+    
+    return _cellHeight;
+}
+```
+
+**注意**: `CELL_CONTENT_WIDTH` 是指 Cell 内容区域的宽度，你需要根据实际布局来确定。
+
+**第二步：在获取数据时提前计算并缓存**
+
+在网络请求返回、数据解析完成后，立即遍历所有数据模型，触发一次高度计算。
+
+```objc
+// Objective-C
+- (void)processFetchedData:(NSArray *)newData {
+    NSMutableArray *processedData = [NSMutableArray array];
+    for (NSDictionary *dataDict in newData) {
+        MyDataModel *model = [[MyDataModel alloc] initWithDictionary:dataDict];
+        // 关键一步：在添加到数据源之前，就计算并缓存好高度
+        [model cellHeight]; 
+        [processedData addObject:model];
+    }
+    
+    self.dataSource = processedData;
+    [self.tableView reloadData];
+}
+```
+
+这个过程可以在后台线程完成，避免阻塞主线程。
+
+**第三步：`heightForRowAtIndexPath` 只负责读取**
+
+现在，这个代理方法变得极其轻量和高效。
+
+```objc
+// Objective-C
+- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
+    MyDataModel *model = self.dataSource[indexPath.row];
+    // 直接从模型中读取已缓存的高度
+    return model.cellHeight;
+}
+```
+
+好的，前两个方案解决了 Cell 的生命周期管理和高度计算效率，接下来我们关注 Cell 内容的绘制，特别是图片这类耗时资源的处理。
+
+---
+
+### 方案三：异步图片加载与预加载 / 异步绘制 (Offloading Work from Main Thread)
+
+在 `UITableViewCell` 中显示图片，尤其是从网络加载的图片，是导致卡顿的常见原因。
+
+#### 1. 问题的根源：主线程阻塞
+
+当你在 `cellForRowAtIndexPath` 中同步地（在主线程）执行以下任何操作，都可能导致卡顿：
+
+*   **加载网络图片**：发出网络请求，等待图片下载完成。
+*   **处理大尺寸本地图片**：将磁盘上的大图加载到内存，进行解码。
+*   **对图片进行操作**：裁剪、缩放、添加滤镜、合成等。
+*   **大量文字排版计算**：虽然大部分文字渲染由系统优化，但极端复杂的自定义排版仍可能耗时。
+
+这些操作通常耗时较长，如果发生在主线程，就会阻塞 UI 渲染，导致掉帧。
+
+#### 2. 优化策略：将耗时操作移出主线程
+
+核心思想是：**任何可能耗时的操作都应该放到后台线程执行**，而主线程只负责更新 UI。
+
+**第一步：异步加载网络图片 (推荐使用第三方库)**
+
+这是最常见也最简单有效的优化。不要自己手动写 `NSURLSession` 去下载图片，而是使用成熟的第三方库。
+
+* **例如：SDWebImage (或其他类似库如 Kingfisher, Nuke)**
+  这些库自带了图片缓存（内存缓存和磁盘缓存）、异步下载、占位图、取消旧请求、渐进式加载等一系列高级功能。
+
+  ```objc
+  // Objective-C
+  #import <SDWebImage/UIImageView+WebCache.h>
+  
+  - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+      MyTableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"MyCellIdentifier" forIndexPath:indexPath];
+      
+      MyDataModel *data = self.dataSource[indexPath.row];
+      
+      // 关键：使用 SDWebImage 异步加载图片
+      // 会自动处理占位图、缓存、下载、取消旧请求等
+      [cell.customImageView sd_setImageWithURL:[NSURL URLWithString:data.imageUrl] 
+                              placeholderImage:[UIImage imageNamed:@"placeholder"]];
+      
+      return cell;
+  }
+  ```
+
+  *   **原理**：这些库在后台线程进行图片下载和解码，下载完成后在主线程更新 `UIImageView`。
+
+好的，我们已经讨论了 Cell 的生命周期、高度计算和内容加载。现在，我们来关注一个更深层次的性能问题：**图层混合与离屏渲染**。
+
+---
+
+### 方案四：减少图层混合与避免离屏渲染
+
+即使 Cell 的内容和高度都已优化，不恰当的视觉效果设置仍然可能给 GPU 带来沉重负担，导致性能下降。
+
+#### 1. 问题的根源：GPU 的额外工作
+
+**A. 图层混合 (Blending)**
+
+*   **是什么？** 当多个半透明（alpha < 1.0）的图层叠加在一起时，GPU 需要计算它们混合后的最终颜色。这个计算过程不是简单的颜色覆盖，而是需要读取目标像素颜色，再结合源像素颜色和透明度，通过公式计算出新颜色。
+*   **为什么耗性能？** 这个“读-改-写”的过程比简单地用新颜色覆盖旧颜色（不透明图层）要消耗更多的 GPU 处理能力。如果在一个 `UITableView` 中，每个 Cell 都有多层半透明视图叠加，滑动时 GPU 的负担会非常重。
+
+**B. 离屏渲染 (Off-Screen Rendering)**
+
+*   我们在之前的讨论中已经详细解释过。它会**创建额外的缓冲区**并导致**昂贵的上下文切换**。在 `UITableView` 中，最常见的触发源就是**圆角裁剪**和**阴影**。
+
+#### 2. 优化策略：让 GPU “减负”
+
+核心思想是：**尽量让视图不透明，并避免使用需要多趟渲染才能实现的视觉效果。**
+
+#### **如何检测？**
+
+*   **图层混合**：在模拟器 `Debug` 菜单中，选择 `Color Blended Layers`。所有发生混合的区域都会被高亮成**红色**。不透明的区域是绿色。你的目标是**尽可能减少红色区域**。
+*   **离屏渲染**：同样在 `Debug` 菜单中，选择 `Color Off-screen Rendered`。触发离屏渲染的区域会高亮成**黄色**。你的目标是**消除不必要的黄色区域**。
+
+#### **如何优化？**
+
+**A. 减少和消除图层混合**
+
+1. **设置 `backgroundColor`**：
+
+   * **最常见的问题**：`UILabel`, `UIImageView` 等控件默认的 `backgroundColor` 是 `nil`（即透明）。如果它们被放在一个有背景色的父视图上，就会发生图层混合。
+
+   * **解决方案**：为 Cell 内的每个视图控件（特别是 `UILabel`）显式设置一个**不透明的背景色**。如果它的背景应该和 Cell 的背景一样，就设置成 Cell 的背景色。
+
+     ```objc
+     // 在 MyTableViewCell.m 中
+     myLabel.backgroundColor = [UIColor whiteColor]; // 或者 self.contentView.backgroundColor
+     myLabel.layer.masksToBounds = YES; // 对于 UILabel，设置这个可以进一步优化性能
+     ```
+
+2. **设置 `opaque` 属性**：
+
+   *   向系统表明这个视图是完全不透明的。这可以让渲染系统进行一些优化，比如在绘制时跳过其后面的任何内容。
+   *   当你确定一个视图（及其子视图）完全不透明时，可以设置 `view.layer.opaque = YES;`。`UIImageView` 默认就是 `YES`。
+
+3. **避免使用 `alpha` < 1.0**：
+
+   *   如果只是想让一个视图的颜色变浅，**不要**直接设置 `view.alpha = 0.8;`。
+   *   **更好的方法**是计算出一个混合后的**不透明颜色**，并直接使用这个颜色。例如，如果背景是白色，你想要一个 80% 透明度的黑色文字，那么直接设置文字颜色为 20% 的灰色 (`[UIColor colorWithWhite:0.2 alpha:1.0]`) 效果是一样的，但完全不透明。
+
+**B. 避免离屏渲染**
+
+我们在之前的讨论中已经详细列出了策略，这里针对 `UITableView` 场景再强调一下：
+
+1. **圆角 (`cornerRadius` + `masksToBounds`)**：
+
+   *   **最佳方案**：让 UI 设计师直接提供带圆角的图片。
+   *   **次优方案**：使用 `CAShapeLayer` 作为 `mask`，或者在后台线程异步绘制圆角图片。
+   *   **避免**：直接在 `cellForRowAtIndexPath` 中对 Cell 的 `layer` 设置 `cornerRadius` 和 `masksToBounds`。
+
+2. **阴影 (`shadow`)**：
+
+   * **必须**设置 `shadowPath` 来预先告诉 Core Animation 阴影的形状，避免离屏计算。
+
+     ```objc
+     // 在 MyTableViewCell.m 的 layoutSubviews 方法中设置
+     - (void)layoutSubviews {
+         [super layoutSubviews];
+         self.layer.shadowPath = [UIBezierPath bezierPathWithRect:self.bounds].CGPath;
+     }
+     ```
+
+3. **光栅化 (`shouldRasterize`)**：
+
+   *   再次强调，这是一个**缓存**机制，它本身会**触发一次离屏渲染**。
+   *   **明智地使用它**：只对那些内容**静态不变**但视觉效果复杂（比如包含阴影、圆角、多种控件）的 Cell 开启，可以极大提升后续滚动的性能。对于内容频繁变化的 Cell，则要禁用。
+
+#### 核心要点
+
+*   **打开调试开关**：善用 `Color Blended Layers` (红色) 和 `Color Off-screen Rendered` (黄色) 来定位问题。
+*   **消灭红色 (混合)**：给控件设置**不透明的背景色**，避免使用 `alpha` 透明度。
+*   **消灭黄色 (离屏)**：高效处理**圆角**和**阴影**，这是 `UITableView` 中最常见的离屏渲染来源。
+
 ## 如何扩大一个button的响应范围
 
 ### 1. 创建 `EnlargedHitTestButton` 类
@@ -4930,256 +5455,7 @@ NSLog(@"Changed name: %@", obj.wrongName); // 输出: Changed name: Alice Smith
 }
 ```
 
-这样，无论你传进来的是 `NSString` 还是 `NSMutableString`，`name` 属性最终持有的都将是一个**不可变的、与外部对象无关**的副本，从而保证了数据的安全性和稳定性
-
-## ***事件传递和响应链
-
-`hitTest:`的本质是一个递归函数，它的返回值决定了整个查找链的走向。**一旦在递归的任何一层中，有一个子视图的`hitTest:`调用返回了一个非`nil`的对象，那么这个对象就会被逐层向上传递，并成为整个查找过程的最终结果。**
-
-让我们用一个更精确的、伪代码式的算法来描述任何一个`UIView`的`hitTest:withEvent:`方法的内部逻辑：
-
-```objectivec
-- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    
-    // 步骤 1: 检查自身先决条件
-    // 如果视图隐藏、不允许交互或完全透明，那么它和它的所有子视图都无法响应事件。
-    if (self.hidden || !self.userInteractionEnabled || self.alpha < 0.01) {
-        return nil; // 直接返回 nil，终止这条分支的查找
-    }
-    
-    // 步骤 2: 检查触摸点是否在自己内部
-    // 如果点不在视图的边界内，那么它和它的所有子视图也肯定无法响应。
-    if (![self pointInside:point withEvent:event]) {
-        return nil; // 直接返回 nil，终止这条分支的查找
-    }
-    
-    // 步骤 3: 从后往前（从最上层）遍历子视图，进行递归查找
-    // 这是最关键的一步
-    for (UIView *subview in [self.subviews reverseObjectEnumerator]) {
-        
-        // 坐标转换：将触摸点从当前视图的坐标系转换到子视图的坐标系
-        CGPoint subviewPoint = [self convertPoint:point toView:subview];
-        
-        // 递归调用子视图的 hitTest: 方法
-        UIView *hitTestView = [subview hitTest:subviewPoint withEvent:event];
-        
-        // ----> 核心判断在此 <----
-        // 如果子视图的 hitTest: 方法返回了一个非 nil 的对象，
-        // 这意味着在子视图的层级中已经找到了最合适的响应者。
-        if (hitTestView != nil) {
-            // 那么当前视图的查找任务就完成了，它不需要再检查其他子视图，
-            // 也不需要检查自己。它要做的就是立刻将这个结果向上传递。
-            return hitTestView; 
-        }
-    }
-    
-    // 步骤 4: 如果所有子视图都没有返回结果，那么自己就是响应者
-    // 能执行到这里，说明：
-    // 1. 触摸点在当前视图内部（通过了步骤2）。
-    // 2. 遍历了所有子视图，但它们的 hitTest: 都返回了 nil。
-    // 因此，当前视图就是这次查找的最佳响应者。
-    return self; 
-}
-```
-
-### 结合一个具体例子来走一遍流程
-
-假设我们有这样的视图层级：
-`UIWindow`
-└── `View A` (绿色背景)
-    └── `View B` (蓝色背景，在A的内部)
-        └── `Button C` (红色按钮，在B的内部)
-
-用户触摸了 **红色按钮 C**。
-
-1.  **`UIWindow` 的 `hitTest:` 被调用。**
-    *   步骤 1 & 2 通过。
-    *   步骤 3: `Window` 只有一个子视图 `View A`。它调用 `[View A hitTest:...]`。
-
-2.  **`View A` 的 `hitTest:` 被调用。**
-    *   步骤 1 & 2 通过。
-    *   步骤 3: `View A` 只有一个子视图 `View B`。它调用 `[View B hitTest:...]`。
-
-3.  **`View B` 的 `hitTest:` 被调用。**
-    *   步骤 1 & 2 通过。
-    *   步骤 3: `View B` 只有一个子视图 `Button C`。它调用 `[Button C hitTest:...]`。
-
-4.  **`Button C` 的 `hitTest:` 被调用。**
-    *   步骤 1 & 2 通过（触摸点在按钮内）。
-    *   步骤 3: `Button C` 没有子视图，`for` 循环直接结束。
-    *   步骤 4: 因为没有子视图返回结果，并且点在自己内部，**`Button C` 的 `hitTest:` 方法返回 `self` (也就是 `Button C` 对象)**。这是整个递归链中**第一个返回的非 `nil` 对象**。
-
-5.  **返回链开始回溯**
-    *   现在回到 `View B` 的 `hitTest:` 方法中。它收到了 `[Button C hitTest:...]` 的返回值，这个值是 `Button C` 对象，**不是 `nil`**。
-    *   `View B` 的代码执行到 `if (hitTestView != nil)`，判断为真。
-    *   **于是 `View B` 的 `hitTest:` 立刻 `return hitTestView;`**，也就是把 `Button C` 对象原封不动地返回了。它不会再检查其他子视图，也不会返回自己。
-
-6.  **继续回溯**
-    *   现在回到 `View A` 的 `hitTest:` 方法中。它收到了 `[View B hitTest:...]` 的返回值，这个值是 `Button C` 对象，**不是 `nil`**。
-    *   `View A` 的代码执行到 `if (hitTestView != nil)`，判断为真。
-    *   **于是 `View A` 的 `hitTest:` 立刻 `return hitTestView;`**，把 `Button C` 对象继续向上传递。
-
-7.  **最终结果**
-    *   最后，`UIWindow` 的 `hitTest:` 方法收到了 `[View A hitTest:...]` 的返回值，即 `Button C` 对象。
-    *   `UIWindow` 也将这个对象作为最终结果返回。
-
-至此，整个 Hit-Testing 过程结束。系统确定了**红色按钮 C**是这次触摸事件的最佳响应者（Hit-Test View）。
-
----
-
-### 第一阶段：Hit-Testing (寻找最佳响应者)
-
-当用户触摸屏幕时，系统会产生一个触摸事件（`UIEvent`），并将其加入到当前应用的事件队列中。`UIApplication`会从队列中取出该事件，然后开始寻找处理它的最佳视图。
-
-这个过程的核心方法是 `hitTest:withEvent:`。
-
-#### Hit-Testing 算法流程
-
-1.  **起点**：`UIApplication`将事件传递给`UIWindow`。
-2.  **调用 `hitTest:`**：`UIWindow`调用自己的`hitTest:withEvent:`方法。
-
-`hitTest:withEvent:`方法的内部逻辑大致如下：
-
-**Step A: 检查自身能否响应事件**
-
-*   首先，它会调用`pointInside:withEvent:`方法判断触摸点是否在当前视图的坐标范围内。
-*   如果`pointInside:`返回`NO`（触摸点不在视图内），那么`hitTest:`直接返回`nil`，表示自己和所有子视图都无法响应。
-*   如果`pointInside:`返回`YES`，则继续下一步。
-
-**Step B: 检查子视图**
-
-*   它会**从后往前**（也就是从最上层的子视图到最下层的子视图）遍历自己的所有子视图。
-*   对于每一个子视图，它会先将触摸点的坐标从当前视图转换到子视图的坐标系中，然后以新的坐标点调用该子视图的`hitTest:withEvent:`方法。
-*   **递归**：这个过程会一直递归下去，直到最深层的视图。
-
-**Step C: 返回结果**
-
-*   如果在遍历子视图的过程中，有一个子视图的`hitTest:`方法返回了一个非`nil`的视图对象，那么当前视图的`hitTest:`方法就会**立即停止遍历**，并直接将这个对象返回。这个返回的视图就是所谓的“最佳响应者”（Hit-Test View）。
-*   如果遍历完所有子视图，它们的`hitTest:`方法都返回`nil`，那么就意味着没有子视图能响应这个事件。由于在Step A中已经确认了触摸点在当前视图内，所以当前视图就成为最佳响应者，`hitTest:`方法会返回`self`。
-
-#### 哪些视图会被忽略？
-
-在Hit-Testing过程中，如果一个视图满足以下任何一个条件，它和它的所有子视图都会被直接忽略：
-
-*   `userInteractionEnabled = NO` (用户交互关闭)
-*   `hidden = YES` (视图隐藏)
-*   `alpha < 0.01` (视图基本全透明)
-
-**总结：Hit-Testing就是一个深度优先的递归搜索，目的是找到包含触摸点且在视图层级中最深、最上层的那个视图。**
-
----
-
-### 第二阶段：Responder Chain (响应者链的事件传递)
-
-一旦Hit-Testing过程找到了最佳响应者（Hit-Test View），事件就会被传递给它，然后事件就进入了响应者链的传递阶段。
-
-#### 什么是响应者链 (Responder Chain)？
-
-响应者链是由一系列能响应事件的`UIResponder`对象组成的链条。`UIView`、`UIViewController`、`UIWindow`、`UIApplication`都是`UIResponder`的子类。
-
-每个`UIResponder`对象都有一个`nextResponder`属性，指向链中的下一个响应者。
-
-#### 事件传递流程
-
-1.  **首个响应者处理**：系统首先将事件（通过`touchesBegan:withEvent:`等方法）传递给Hit-Testing找到的那个**最佳响应者（First Responder）**。
-
-2.  **响应或传递**：
-    *   如果这个First Responder实现了相应的触摸事件处理方法（如`touchesBegan:withEvent:`），它就可以处理这个事件。处理完后，事件传递就此结束。
-    *   如果它想让其他响应者也处理，可以调用`[super touchesBegan:withEvent:]`。
-    *   如果它**没有实现**相应的处理方法，或者在实现中明确调用了`super`的同名方法，那么事件就会沿着`nextResponder`属性，传递给链中的**下一个响应者**。
-
-#### 响应者链的默认传递路径
-
-事件的传递路径通常如下：
-
-1.  **UIView**: 如果一个视图是First Responder，它的`nextResponder`是：
-    *   如果它是某个`UIViewController`的根视图（`self.view`），那么下一个响应者就是这个`UIViewController`。
-    *   否则，它的下一个响应者就是它的**父视图（superview）**。
-
-2.  **UIViewController**: 它的`nextResponder`是它的根视图的父视图（`self.view.superview`）。
-
-3.  **UIWindow**: 它的`nextResponder`是`UIApplication`。
-
-4.  **UIApplication**: 它的`nextResponder`是`AppDelegate`（如果`AppDelegate`继承自`UIResponder`且不是视图、视图控制器或应用本身）。
-
-5.  **最终**：如果事件一路传递到`UIApplication`都无人处理，那么这个事件就会被系统丢弃
-
----
-
-### 事件响应的三种“拦截”方式
-
-当一个触摸事件（`UIEvent`）通过 **Hit-Testing** 过程找到了最合适的响应视图（我们称之为 Hit-Test View）后，系统会把这个事件交给这个视图，然后就开始了**响应链（Responder Chain）**的旅程。
-
-在这个旅程中，有三道主要的“关卡”可以拦截并处理这个事件。它们的**优先级**通常是：
-
-**第一优先级：手势识别器 (UIGestureRecognizer)**
-**第二优先级：`touchesBegan:` / `touchesMoved:` / `touchesEnded:` 系列方法**
-**第三优先级：`addTarget:` 方式 (只适用于 `UIControl` 及其子类)**
-
-让我们来详细分析每一道关卡。
-
----
-
-### 第一道关卡 (最高优先级)：手势识别器
-
-在系统准备调用 Hit-Test View 的 `touchesBegan:` 方法**之前**，它会先做一个非常重要的检查：**这个视图以及它的父视图上，有没有附加手势识别器？**
-
-1.  **手势的“偷窥权”**:
-    *   `UIWindow` 在分发触摸事件时，会首先将事件“喂”给所有附加在视图层级中的手势识别器。这给了手势一个“**优先窥探**”事件的机会。
-    *   手势识别器会分析这个触摸事件序列（Began, Moved, Ended），判断它是否符合自己定义的模式（比如单击、双击、长按、拖动）。
-
-2.  **手势成功识别 (状态变为 `Recognized` / `Ended`)**:
-    *   一旦某个手势（比如 `UITapGestureRecognizer`）成功识别出了一个单击手势。
-    *   **默认行为**：
-        1.  它会立即向它的 `target` 发送 `action` 消息。
-        2.  为了不让事件“一事二主”，手势会“**吞掉**”这个事件。它会向视图发送 `touchesCancelled:` 消息，**阻止**视图的 `touchesBegan:` / `touchesEnded:` 方法被调用。
-        3.  因为 `touches` 系列方法没有被调用，所以事件自然**不会**再沿着响应者链向上传递。
-
-3.  **手势识别失败**:
-    *   如果手势分析了触摸事件后，认为不符合它的模式（比如用户是拖动而不是单击），它的状态会变为 `Failed`。
-    *   此时，手势会“放开”这个事件，触摸事件会继续它正常的旅程，去调用视图的 `touchesBegan:` 等方法。
-
-**结论**: **只要一个手势成功识别了事件，默认情况下，`touchesBegan:` 就不会被调用，响应者链的传递也就被“截胡”了。**
-
-*   **可以改变这个默认行为吗？** 可以。`UIGestureRecognizer` 有一个 `cancelsTouchesInView` 属性，如果设置为 `NO`，那么即使手势成功识别，`touches` 系列方法也依然会被调用。
-
----
-
-### 第二道关卡：重写 `touches` 系列方法
-
-如果一个视图上没有手势，或者手势识别失败了，那么事件就会来到第二道关卡。
-
-1.  Hit-Test View 的 `touchesBegan:withEvent:` 方法会被调用。
-2.  **默认行为**:
-    *   如果你**重写**了这个方法，并在里面处理了事件逻辑，但**没有**调用 `[super touchesBegan:withEvent:]`。
-    *   那么，你就“**消费**”了这个事件。
-    *   事件的传递就此**终止**，它不会再被传递给视图的 `nextResponder`（比如它的父视图或视图控制器）。
-
-3.  **传递事件**:
-    *   如果你在方法的最后调用了 `[super touchesBegan:withEvent:]`。
-    *   那么你就明确地告诉系统：“我的事办完了，现在把这个事件交给我的上级（`nextResponder`）去处理吧。”
-    *   事件就会继续沿着响应者链向上传递。
-
-**结论**: **重写 `touchesBegan:` 并处理事件（且不调用 `super`），确实会阻止事件向父视图传递。**
-
----
-
-### 第三道关卡：`UIControl` 的 `addTarget:` 机制
-
-这道关卡比较特殊，它只适用于 `UIButton`, `UISlider`, `UITextField` 等继承自 `UIControl` 的控件。
-
-`UIControl` 内部封装了对 `touches` 系列方法的处理，它自己实现了一套完整的触摸跟踪和事件分发机制。
-
-1.  **内部实现**:
-    *   当一个 `UIButton` 收到 `touchesEnded:` 事件时，它会在内部判断这次触摸是否是一次有效的“点击”（比如手指是否在按钮范围内抬起）。
-    *   如果是有效点击，它就会触发 `UIControlEvents.touchUpInside` 事件。
-    *   然后，它会查找所有通过 `addTarget:action:forControlEvents:` 添加的 `target-action` 对，并向它们发送消息。
-
-2.  **与响应者链的关系**:
-    *   `UIControl` 在处理完自己的 `target-action` 逻辑后，**默认不会再将事件传递给它的 `super`**。它认为自己作为专门的交互控件，已经完成了事件的最终处理。
-    *   因此，当你点击一个按钮时，它的 `target-action` 会被触发，但通常情况下，这个按钮的父视图的 `touchesBegan:` 是不会被调用的。
-
-**结论**: **是的，`addTarget:` 响应了事件后，默认也不会再将触摸事件往父视图抛。**
+这样，无论你传进来的是 `NSString` 还是 `NSMutableString`，`name` 属性最终持有的都将是一个**不可变的、与外部对象无关**的副本，从而保证了数据的安全性和稳定
 
 ## ***uiview怎么渲染到屏幕上
 
@@ -6041,324 +6317,7 @@ NSLog(@"Frame after layout: %@", NSStringFromCGRect(myView.frame)); // -> {{93.7
 
 ## 如何使线程保活
 
-## TableView优化，怎么减少卡顿
 
-好的，我们继续深入。掌握了 Cell 的正确复用后，下一个对性能影响最大的因素，就是 **Cell 高度的计算**。
-
-### 方案二：高效计算并缓存 Cell 高度
-
-`UITableView` 在显示内容前，需要知道每个 Cell 的确切高度，以便计算出自己的 `contentSize`、滚动条的位置等信息。如果高度计算过于耗时，就会在滑动时严重拖慢主线程，导致卡顿。
-
-#### 1. 问题的根源：`heightForRowAtIndexPath` 的调用时机
-
-你可能会认为 `-tableView:heightForRowAtIndexPath:` 这个代理方法只会在 Cell 即将出现时才被调用。但事实并非如此：
-
-*   **加载时**：`UITableView` 在第一次加载时，会调用**所有可见 Cell**的 `heightForRowAtIndexPath:`。
-*   **滑动时**：每次滑动，它不仅会为**新出现的 Cell** 调用此方法，还可能为了计算滚动条的比例而调用**大量甚至全部** Cell 的 `heightForRowahoawIndexPath:`。
-
-如果你的高度计算逻辑很复杂（比如基于文本内容动态计算），并且每次都实时计算，那么当列表数据量很大时，性能开销将是巨大的。
-
-#### 2. 优化策略：计算与缓存分离
-
-核心思想是：**不要在 `heightForRowAtIndexPath:` 中进行任何实时计算**。这个方法应该像一个高速的查询接口，只负责从一个已经准备好的地方**读取**高度值。真正的计算应该提前完成，并且结果要被**缓存**起来。
-
-**第一步：将高度计算逻辑移到数据模型（Model）中**
-
-让数据模型自己负责计算其对应内容所需的高度。这样，高度就和数据绑定在了一起，逻辑更清晰。
-
-**`MyDataModel.m`**
-```objc
-// Objective-C
-#import <UIKit/UIKit.h>
-
-@implementation MyDataModel
-
-- (CGFloat)cellHeight {
-    // _cellHeight 是在 .h 中声明的属性，用于缓存
-    // 如果已经计算过，直接返回缓存值
-    if (_cellHeight > 0) {
-        return _cellHeight;
-    }
-    
-    // --- 在这里执行复杂的计算逻辑 ---
-    CGFloat height = 0;
-    
-    // 假设有标题、内容和图片
-    height += 10; // 顶部间距
-    
-    // 计算标题高度
-    height += [self.title boundingRectWithSize:CGSizeMake(CELL_CONTENT_WIDTH, CGFLOAT_MAX) 
-                                      options:NSStringDrawingUsesLineFragmentOrigin 
-                                   attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:17]} 
-                                      context:nil].size.height;
-    
-    height += 8; // 标题和内容间距
-    
-    // 计算内容高度
-    height += [self.content boundingRectWithSize:CGSizeMake(CELL_CONTENT_WIDTH, CGFLOAT_MAX) 
-                                        options:NSStringDrawingUsesLineFragmentOrigin 
-                                     attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:14]} 
-                                        context:nil].size.height;
-    
-    if (self.image) {
-        height += 8; // 内容和图片间距
-        height += 150; // 图片固定高度
-    }
-    
-    height += 10; // 底部间距
-    
-    // 将计算结果缓存起来
-    _cellHeight = height;
-    
-    return _cellHeight;
-}
-```
-**注意**: `CELL_CONTENT_WIDTH` 是指 Cell 内容区域的宽度，你需要根据实际布局来确定。
-
-**第二步：在获取数据时提前计算并缓存**
-
-在网络请求返回、数据解析完成后，立即遍历所有数据模型，触发一次高度计算。
-
-```objc
-// Objective-C
-- (void)processFetchedData:(NSArray *)newData {
-    NSMutableArray *processedData = [NSMutableArray array];
-    for (NSDictionary *dataDict in newData) {
-        MyDataModel *model = [[MyDataModel alloc] initWithDictionary:dataDict];
-        // 关键一步：在添加到数据源之前，就计算并缓存好高度
-        [model cellHeight]; 
-        [processedData addObject:model];
-    }
-    
-    self.dataSource = processedData;
-    [self.tableView reloadData];
-}
-```
-这个过程可以在后台线程完成，避免阻塞主线程。
-
-**第三步：`heightForRowAtIndexPath` 只负责读取**
-
-现在，这个代理方法变得极其轻量和高效。
-
-```objc
-// Objective-C
-- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    MyDataModel *model = self.dataSource[indexPath.row];
-    // 直接从模型中读取已缓存的高度
-    return model.cellHeight;
-}
-```
-
-好的，前两个方案解决了 Cell 的生命周期管理和高度计算效率，接下来我们关注 Cell 内容的绘制，特别是图片这类耗时资源的处理。
-
----
-
-### 方案三：异步图片加载与预加载 / 异步绘制 (Offloading Work from Main Thread)
-
-在 `UITableViewCell` 中显示图片，尤其是从网络加载的图片，是导致卡顿的常见原因。
-
-#### 1. 问题的根源：主线程阻塞
-
-当你在 `cellForRowAtIndexPath` 中同步地（在主线程）执行以下任何操作，都可能导致卡顿：
-
-*   **加载网络图片**：发出网络请求，等待图片下载完成。
-*   **处理大尺寸本地图片**：将磁盘上的大图加载到内存，进行解码。
-*   **对图片进行操作**：裁剪、缩放、添加滤镜、合成等。
-*   **大量文字排版计算**：虽然大部分文字渲染由系统优化，但极端复杂的自定义排版仍可能耗时。
-
-这些操作通常耗时较长，如果发生在主线程，就会阻塞 UI 渲染，导致掉帧。
-
-#### 2. 优化策略：将耗时操作移出主线程
-
-核心思想是：**任何可能耗时的操作都应该放到后台线程执行**，而主线程只负责更新 UI。
-
-**第一步：异步加载网络图片 (推荐使用第三方库)**
-
-这是最常见也最简单有效的优化。不要自己手动写 `NSURLSession` 去下载图片，而是使用成熟的第三方库。
-
-*   **例如：SDWebImage (或其他类似库如 Kingfisher, Nuke)**
-    这些库自带了图片缓存（内存缓存和磁盘缓存）、异步下载、占位图、取消旧请求、渐进式加载等一系列高级功能。
-
-    ```objc
-    // Objective-C
-    #import <SDWebImage/UIImageView+WebCache.h>
-    
-    - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-        MyTableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"MyCellIdentifier" forIndexPath:indexPath];
-        
-        MyDataModel *data = self.dataSource[indexPath.row];
-        
-        // 关键：使用 SDWebImage 异步加载图片
-        // 会自动处理占位图、缓存、下载、取消旧请求等
-        [cell.customImageView sd_setImageWithURL:[NSURL URLWithString:data.imageUrl] 
-                                placeholderImage:[UIImage imageNamed:@"placeholder"]];
-        
-        return cell;
-    }
-    ```
-    *   **原理**：这些库在后台线程进行图片下载和解码，下载完成后在主线程更新 `UIImageView`。
-
-好的，我们已经讨论了 Cell 的生命周期、高度计算和内容加载。现在，我们来关注一个更深层次的性能问题：**图层混合与离屏渲染**。
-
----
-
-### 方案四：减少图层混合与避免离屏渲染
-
-即使 Cell 的内容和高度都已优化，不恰当的视觉效果设置仍然可能给 GPU 带来沉重负担，导致性能下降。
-
-#### 1. 问题的根源：GPU 的额外工作
-
-**A. 图层混合 (Blending)**
-
-*   **是什么？** 当多个半透明（alpha < 1.0）的图层叠加在一起时，GPU 需要计算它们混合后的最终颜色。这个计算过程不是简单的颜色覆盖，而是需要读取目标像素颜色，再结合源像素颜色和透明度，通过公式计算出新颜色。
-*   **为什么耗性能？** 这个“读-改-写”的过程比简单地用新颜色覆盖旧颜色（不透明图层）要消耗更多的 GPU 处理能力。如果在一个 `UITableView` 中，每个 Cell 都有多层半透明视图叠加，滑动时 GPU 的负担会非常重。
-
-**B. 离屏渲染 (Off-Screen Rendering)**
-
-*   我们在之前的讨论中已经详细解释过。它会**创建额外的缓冲区**并导致**昂贵的上下文切换**。在 `UITableView` 中，最常见的触发源就是**圆角裁剪**和**阴影**。
-
-#### 2. 优化策略：让 GPU “减负”
-
-核心思想是：**尽量让视图不透明，并避免使用需要多趟渲染才能实现的视觉效果。**
-
-#### **如何检测？**
-
-*   **图层混合**：在模拟器 `Debug` 菜单中，选择 `Color Blended Layers`。所有发生混合的区域都会被高亮成**红色**。不透明的区域是绿色。你的目标是**尽可能减少红色区域**。
-*   **离屏渲染**：同样在 `Debug` 菜单中，选择 `Color Off-screen Rendered`。触发离屏渲染的区域会高亮成**黄色**。你的目标是**消除不必要的黄色区域**。
-
-#### **如何优化？**
-
-**A. 减少和消除图层混合**
-
-1.  **设置 `backgroundColor`**：
-    *   **最常见的问题**：`UILabel`, `UIImageView` 等控件默认的 `backgroundColor` 是 `nil`（即透明）。如果它们被放在一个有背景色的父视图上，就会发生图层混合。
-    *   **解决方案**：为 Cell 内的每个视图控件（特别是 `UILabel`）显式设置一个**不透明的背景色**。如果它的背景应该和 Cell 的背景一样，就设置成 Cell 的背景色。
-        ```objc
-        // 在 MyTableViewCell.m 中
-        myLabel.backgroundColor = [UIColor whiteColor]; // 或者 self.contentView.backgroundColor
-        myLabel.layer.masksToBounds = YES; // 对于 UILabel，设置这个可以进一步优化性能
-        ```
-
-2.  **设置 `opaque` 属性**：
-    *   向系统表明这个视图是完全不透明的。这可以让渲染系统进行一些优化，比如在绘制时跳过其后面的任何内容。
-    *   当你确定一个视图（及其子视图）完全不透明时，可以设置 `view.layer.opaque = YES;`。`UIImageView` 默认就是 `YES`。
-
-3.  **避免使用 `alpha` < 1.0**：
-    *   如果只是想让一个视图的颜色变浅，**不要**直接设置 `view.alpha = 0.8;`。
-    *   **更好的方法**是计算出一个混合后的**不透明颜色**，并直接使用这个颜色。例如，如果背景是白色，你想要一个 80% 透明度的黑色文字，那么直接设置文字颜色为 20% 的灰色 (`[UIColor colorWithWhite:0.2 alpha:1.0]`) 效果是一样的，但完全不透明。
-
-**B. 避免离屏渲染**
-
-我们在之前的讨论中已经详细列出了策略，这里针对 `UITableView` 场景再强调一下：
-
-1.  **圆角 (`cornerRadius` + `masksToBounds`)**：
-    *   **最佳方案**：让 UI 设计师直接提供带圆角的图片。
-    *   **次优方案**：使用 `CAShapeLayer` 作为 `mask`，或者在后台线程异步绘制圆角图片。
-    *   **避免**：直接在 `cellForRowAtIndexPath` 中对 Cell 的 `layer` 设置 `cornerRadius` 和 `masksToBounds`。
-
-2.  **阴影 (`shadow`)**：
-    *   **必须**设置 `shadowPath` 来预先告诉 Core Animation 阴影的形状，避免离屏计算。
-        ```objc
-        // 在 MyTableViewCell.m 的 layoutSubviews 方法中设置
-        - (void)layoutSubviews {
-            [super layoutSubviews];
-            self.layer.shadowPath = [UIBezierPath bezierPathWithRect:self.bounds].CGPath;
-        }
-        ```
-
-3.  **光栅化 (`shouldRasterize`)**：
-    *   再次强调，这是一个**缓存**机制，它本身会**触发一次离屏渲染**。
-    *   **明智地使用它**：只对那些内容**静态不变**但视觉效果复杂（比如包含阴影、圆角、多种控件）的 Cell 开启，可以极大提升后续滚动的性能。对于内容频繁变化的 Cell，则要禁用。
-
-#### 核心要点
-
-*   **打开调试开关**：善用 `Color Blended Layers` (红色) 和 `Color Off-screen Rendered` (黄色) 来定位问题。
-*   **消灭红色 (混合)**：给控件设置**不透明的背景色**，避免使用 `alpha` 透明度。
-*   **消灭黄色 (离屏)**：高效处理**圆角**和**阴影**，这是 `UITableView` 中最常见的离屏渲染来源。
-
-通过对 GPU 渲染层面的优化，你可以进一步压榨出列表的性能，使其在各种设备上都能如丝般顺滑。
-
-接下来，我们可以讨论一些更零散但同样有效的“锦上添花”的优化技巧。
-
-## oc的cell重用机制 重用的数量由什么决定
-
-### 深入解析OC中的Cell重用机制
-
-`UITableView`和`UICollectionView`之所以能够高效处理大量数据，其核心就在于**Cell的重用机制**。想象一下，如果一个列表有一万行数据，为每一行都创建一个`UITableViewCell`对象，将会消耗巨大的内存，导致应用卡顿甚至崩溃。重用机制就是为了解决这个问题而设计的。
-
-其核心思想是：**只创建足够在屏幕上显示以及少量用于缓冲的Cell实例，当Cell滚出屏幕时，不销毁它，而是将其放入一个“重用池”（Reuse Queue）中。当需要显示新的Cell时，优先从这个重用池中取出一个已经存在的Cell实例，而不是重新创建一个。**
-
----
-
-### 决定重用数量的核心因素：一个动态的平衡
-
-重用池中Cell的数量以及系统总共创建的Cell实例数量，并不是一个固定的值，而是由以下几个关键因素动态决定的：
-
-1.  **屏幕可见区域的高度 (Bounds Height):**
-    *   这是最直接的决定因素。系统会计算在当前`UITableView`或`UICollectionView`的可见区域内，能够容纳多少个Cell。
-    *   例如，如果一个`UITableView`的高度是600个点（points），每个Cell的高度是60个点，那么屏幕上最多可以完整显示10个Cell。系统就必须至少创建10个Cell实例来填满这个可见区域。
-2.  **Cell的高度或尺寸 (Item Size):**
-    *   Cell的尺寸直接影响了屏幕上可以同时显示的数量。如果Cell的高度变小，那么屏幕上需要显示的Cell数量就会增多，系统相应地就需要创建更多的实例来填满屏幕。反之亦然。
-    *   对于高度不固定的Cell（例如使用`UITableViewAutomaticDimension`），系统会根据估算高度和实际内容计算来动态管理。
-3.  **缓冲区域 (Buffer Zone):**
-    *   为了确保滚动的流畅性，系统并不会只创建刚好填满屏幕的Cell。它会在可见区域的上方和下方额外创建并缓存一小部分Cell，形成一个缓冲区。
-    *   这个缓冲区的作用是，当用户快速滚动时，即将进入屏幕的Cell已经准备好了，可以直接从缓冲区中取出并显示，从而避免了因实时创建Cell实例可能带来的延迟和卡顿。
-    *   这个缓冲区的大小是系统内部管理的，通常不大，可能只有几个Cell的数量，但足以应对大多数滚动场景。
-
-### Cell的生命周期与工作流程
-
-让我们通过一个完整的流程来理解这一切是如何运作的：
-
-1.  **首次加载 (Cold Start):**
-    *   当`UITableView`首次加载数据时，它会调用`tableView:cellForRowAtIndexPath:`方法。
-    *   此时，因为是第一次加载，对应`reuseIdentifier`的重用池是空的。
-    *   `dequeueReusableCellWithIdentifier:`会返回`nil`（在旧的API中，或者在使用`registerClass:forCellReuseIdentifier:`或Storyboard注册后，它会为你自动创建一个新的实例）。
-    *   你的代码会执行创建新Cell的逻辑（`[[UITableViewCell alloc] initWithStyle:reuseIdentifier:]`）。
-    *   这个过程会不断重复，直到`UITableView`的可见区域被填满，并且上下缓冲区也准备好了相应的Cell实例。假设屏幕能显示10个，缓冲区需要2个，那么系统可能会创建大约12个Cell实例。
-
-2.  **滚动与重用 (Scrolling & Reusing):**
-    *   当用户向上滚动列表时，最顶部的Cell（比如第0行）开始移出屏幕。
-    *   一旦这个Cell完全离开可见区域，它并不会被销毁，而是被系统放入对应其`reuseIdentifier`的重用池中，等待下一次被“召唤”。
-    *   同时，列表的底部需要显示一个新的Cell（比如第11行）。
-    *   此时再次调用`tableView:cellForRowAtIndexPath:`方法。
-    *   `dequeueReusableCellWithIdentifier:`会检查重用池，发现里面有一个刚刚被放入的、可用的Cell（就是之前第0行的那个实例）。
-    *   该方法会返回这个Cell的实例。**注意：返回的是一个已经存在的对象，它可能还保留着之前显示的数据和状态（比如文本、颜色等）。**
-
-3.  **数据更新与状态重置:**
-    *   在`tableView:cellForRowAtIndexPath:`中，拿到这个重用的Cell后，你的责任是**用新的数据覆盖旧的数据**。例如，`cell.textLabel.text = self.dataArray[indexPath.row];`。
-    *   **一个常见的陷阱是：** 如果你只在某些条件下设置了Cell的某个属性（比如高亮颜色），而没有在其他条件下将其重置，那么当这个Cell被重用时，它可能会带着之前的高亮状态错误地显示出来。
-    *   为了解决这个问题，最佳实践是在自定义Cell的`prepareForReuse`方法中，将所有可能变化的状态重置为默认值。这个方法在Cell被重用之前，由系统自动调用。
-
-    ```objectivec
-    // In MyCustomCell.m
-    - (void)prepareForReuse {
-        [super prepareForReuse];
-        // Reset all custom properties to their default state
-        self.customLabel.text = @"";
-        self.customImageView.image = nil;
-        self.contentView.backgroundColor = [UIColor whiteColor];
-    }
-    ```
-
-### 总结
-
-总而言之，重用Cell的数量不是一个固定的数值，而是一个由**“屏幕可见数量 + 少量缓冲区数量”**共同决定的动态值。这个值会受到设备屏幕尺寸、Cell自身尺寸以及滚动速度等多种因素的影响。作为开发者，我们不需要也无法直接控制这个数量，但我们需要深刻理解其工作原理，并遵循以下最佳实践，以确保列表的性能和正确性：
-
-*   **始终使用`dequeueReusableCellWithIdentifier:`** 来获取Cell实例。
-*   **为不同类型的Cell使用不同的`reuseIdentifier`**。
-*   **在`tableView:cellForRowAtIndexPath:`中，总是为Cell的所有UI元素设置新的数据**，覆盖可能存在的旧数据。
-*   **在自定义Cell的`prepareForReuse`方法中，将所有自定义的状态重置为初始状态**，以避免数据错乱。
-
-### 优化清单总结
-
-| 优先级   | 问题领域        | 优化策略                                            |
-| -------- | --------------- | --------------------------------------------------- |
-| **最高** | **Cell 高度**   | **预计算并缓存高度到数据模型**                      |
-| **最高** | **图片处理**    | **异步加载 + 后台解码/缩放 (使用 SDWebImage)**      |
-| **高**   | **Cell 创建**   | 保证 dequeueReusableCell，保持视图层级扁平          |
-| **高**   | **图形渲染**    | 避免离屏渲染（圆角、阴影），设置视图为 opaque       |
-| **中**   | **数据处理**    | 网络请求、JSON 解析等全部放到后台线程               |
-| **中**   | **Auto Layout** | 如果使用自适应高度，**必须**提供 estimatedRowHeight |
 
 ## 有哪些crash的情况
 
@@ -6375,11 +6334,12 @@ iOS 中的 Crash 大致可以分为两大类：**Mach 异常（底层内核级�
 1.  **`NSRangeException` (数组越界)**
     *   **场景**: 试图访问一个数组、字符串等集合类型中不存在的索引。
     *   **示例**:
+        
         ```objc
         NSArray *array = @[@"a", @"b"];
         NSString *value = array[2]; // Crash! 数组只有 0 和 1 两个索引
         ```
-
+    
 2.  **`NSInvalidArgumentException` (无效参数)**
     *   **场景**: 向方法传递了不合法或 `nil` 的参数。
     *   **示例**:
@@ -7939,14 +7899,7 @@ if (deleteSuccess) {
 *   **不适合大数据**：`Keychain` 被设计用来存储少量数据，比如几十到几百字节的字符串。不要用它来存储图片、JSON 大段文本等。
 *   **读写性能较低**：由于涉及加密和解密操作，`Keychain` 的读写速度远慢于 `NSUserDefaults` 或文件系统。不应在需要高性能、频繁读写的场景（如循环中）使用。
 
-#### 总结
 
-| 特性         | 描述                                                         |
-| :----------- | :----------------------------------------------------------- |
-| **核心定位** | 系统的“加密保险箱”                                           |
-| **优点**     | **高度安全**，**App 卸载后数据不丢失**，可跨 App 共享        |
-| **缺点**     | **API 复杂 (需封装)**，不适合大数据，读写慢                  |
-| **黄金法则** | 当你处理的是**密码、Token** 或任何需要加密保护的凭证时，`Keychain` 是**唯一正确**的选择。 |
 
 ## Objective-C vs. Java: 深入剖析两大编程语言的核心差异
 
@@ -8342,15 +8295,87 @@ class Box {
 
 ### ***java有哪些锁
 
+#### 1. 乐观锁的代表：CAS（Compare-And-Swap）
+
+CAS（比较并交换）不是传统意义上的“锁”，而是一种**无锁算法**或**并发原子操作**，它是实现 Java 乐观锁的核心机制。
+
+#### 核心原理
+
+CAS 依赖于 CPU 的原子指令（如 x86 上的 `CMPXCHG`），它包含三个核心操作数：
+
+1.  **V (Value)**：内存中变量的当前值。
+2.  **A (Expected)**：线程预期的旧值（认为它应该是这个值）。
+3.  **B (New)**：如果匹配成功，要写入的新值。
+
+**执行逻辑：**
+*   只有当内存中的当前值 **V 等于预期值 A** 时，处理器才会**原子性地**将 V 更新为新值 **B**。
+*   如果 V ≠ A，则操作失败，不做任何修改。
+
+#### Java 中的体现
+
+Java 的 `java.util.concurrent.atomic` 包下的所有原子类（如 **`AtomicInteger`**, **`AtomicLong`**, **`AtomicReference`**）都是基于 CAS 实现的。
+
+*   **优点：** 性能极高，在低竞争场景下比悲观锁更高效，因为它避免了线程阻塞和内核态切换。
+*   **缺点：** 存在 **ABA 问题**（虽然有 `AtomicStampedReference` 解决），且长时间竞争失败会导致 CPU 空转（自旋）。
+
+---
+
+#### 两大悲观锁：`synchronized` 和 `ReentrantLock`
+
+#### 2. `synchronized` 关键字（JVM 级别的锁）
+
+`synchronized` 是 Java **语言层面**的关键字，由 JVM 负责管理。它是**独占的**、**可重入的**悲观锁。
+
+| 特性         | 描述                                                         |
+| :----------- | :----------------------------------------------------------- |
+| **用法**     | 用于修饰**实例方法**、**静态方法**或**代码块**。             |
+| **锁对象**   | 锁住对象实例（`this`）、Class 对象或指定的对象引用。         |
+| **释放机制** | **自动释放。** 无论代码块正常退出还是抛出异常，JVM 都会保证锁被释放，**极大地减少了死锁的风险** |
+|              |                                                              |
+| **底层实现** | 基于 **JVM 锁升级机制**（偏向锁 → 轻量级锁 → 重量级锁），在低竞争下性能非常优秀。 |
+
+#### 3. `ReentrantLock` 类（API 级别的锁）
+
+`ReentrantLock` 是 `java.util.concurrent.locks.Lock` 接口的实现类。它同样是**独占的**、**可重入的**悲观锁，但提供了更丰富的功能和灵活性。
+
+| 特性           | 描述                                                         |
+| :------------- | :----------------------------------------------------------- |
+| **用法**       | 需要**显式调用 `lock()` 方法获取锁**，**显式调用 `unlock()` 方法释放锁**。 |
+| **释放机制**   | **必须手动释放。** 开发者**必须**在 `finally` 块中调用 `unlock()`，否则一旦程序异常或忘记释放，将导致死锁。 |
+| **中断响应**   | **可中断。** 允许使用 `lockInterruptibly()`，使线程在等待锁时可以响应中断并退出等待。 |
+| **尝试获取锁** | 提供了 **`tryLock()`** 方法，可以非阻塞地尝试获取锁，或设置**超时时间**。 |
+| **公平性**     | **可选公平性。** 可以在构造函数中指定为公平锁（`new ReentrantLock(true)`），保证线程按请求顺序获取锁。 |
+| **条件对象**   | 支持通过 **`newCondition()`** 创建多个 `Condition` 对象，实现更灵活的线程等待/通知机制。 |
+
+---
+
+#### 总结：如何选择互斥锁？
+
+| 场景         | 推荐使用              | 原因                                                         |
+| :----------- | :-------------------- | :----------------------------------------------------------- |
+| **简单互斥** | **`synchronized`**    | 语法简单，JVM 自动管理，代码清晰且安全，性能已优化到很高水平。 |
+| **复杂需求** | **`ReentrantLock`**   | 需要**手动释放**、**可中断等待**、**限时等待**或**精细的多条件唤醒**时。 |
+| **原子操作** | **`Atomic` 类 (CAS)** | 只需要对**单个变量**进行高效、无锁的原子性操作时。           |
+
+### ***CAS原理及其存在的问题
+
+而是直接通过 JVM 调用了操作系统底层的**CPU 提供的原子指令**，**这意味着在同一时刻，其他处理器核心对这块内存地址的读写请求都会被阻止，从而保证了 \*\*“读取内存值 → 比较 → 写入新值，这一系列操作是不可分割**的原子操作。
+
+#### 总线锁定
+
+- **工作原理：** 当一个处理器核心要执行 CAS 操作时，它会向系统总线（Bus）发送一个特殊的 **LOCK# 信号**。
+- **效果：** 这个信号会阻塞（Lock Down）其他处理器核心对**系统内存**的访问。
+- **原子性保证：** 在 LOCK# 信号有效期间，执行 CAS 的处理器独占对内存的操作权，保证了“比较”和“交换”操作得以作为一个单一的、不可中断的整体完成。
+
 ### ***AQS的原理
 
-**一个原子变量 `state`** 来表示锁的状态（0 代表空闲，大于 0 代表锁被占用）。
+**一个原子变量 `state`** 来表示锁的状态（0 代表空闲，大于 0 代表锁被占用，且表示重入次数）。
 
-**CAS（Compare-And-Swap）操作** 来保证 `state` 的原子性修改。
+**CAS操作** 来保证 `state` 的原子性修改。
 
 **一个 FIFO 线程等待队列** 来管理被阻塞的线程。
 
-基本思想就是维护一个原子state和一个owner，一个线程获取锁的逻辑就是尝试cas的修改这个state为1，如果修改成功，就把owner改成当前线程。如果没获取到锁，把线程放到队列尾部，加进去之后自旋一次获取锁（这是为了防止加入之后锁已经被释放了），没获取到锁就阻塞等待唤醒。解锁逻辑就是，把state修改为0，唤醒队列里的的线程。
+基本思想就是维护一个原子state和一个owner，一个线程获取锁的逻辑就是尝试cas的修改这个state为1，如果修改成功，就把owner改成当前线程。如果没获取到锁，把线程放到队列尾部，加进去之后自旋一次获取锁（这是为了防止加入之后锁已经被释放了），没获取到锁就阻塞等待唤醒。解锁逻辑就是，把state修改为0，唤醒阻塞队列头部的线程，这样听起来是一个公平锁，但其实如果此时有一个吸哪里的线程刚好来竞争这个锁，是有可能竞争到，一般是非公平锁的实现。
 
 ### ***什么情况会产生死锁问题？
 
@@ -8417,10 +8442,6 @@ class Box {
 ### JMM?
 
 ### CAS 有什么缺点？
-
-### CAS原理
-
-而是直接通过 JVM 调用了操作系统底层的**CPU 提供的原子指令**，一次实现比较和交换两个动作。`Unsafe` 类提供了一个桥梁
 
 ### 悲观锁和乐观锁的区别？
 
@@ -8544,6 +8565,8 @@ volatile + CAS 或者 synchronized 实现
 ### ***Gc Root是哪些，有什么用
 
 * 调用方法中的局部变量、类中的static变量引用某些堆中的变量、常量引用的对象
+
+### ***java垃圾回收
 
 ### 程序计数器的作用
 
@@ -8804,4 +8827,3 @@ eventbus就是一个事件总线
 **观察者模式的使用**：相当于发布转码任务是观察者发一个事件，然后事件里存一下转码文件的信息，然后观察者接收到之后就利用一个线程池异步转码。
 
 具体实现就是，定义一个事件类继承自`ApplicationEvent `,然后在service注入`ApplicationEventPublisher `处理完业务逻辑之后去发布这个事件，然后用@EventListener注解去定义一个观察者方法去观察某个具体事件类就行
-
