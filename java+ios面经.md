@@ -1,6 +1,6 @@
 # 面经
 
-## ***了解哪些锁，计算机宽泛概念上的、
+## ***了解哪些锁，计算机宽泛概念上的锁
 
 互斥锁，自旋锁，乐观锁，悲观锁，递归锁
 
@@ -548,7 +548,7 @@ Block 本质上是**代码块**和**闭包**（Closure），它们最常用于�
 
   Objective-C
 
-  ```
+  ```objc
   [NetworkManager fetchDataWithCompletion:^(NSData *data, NSError *error) {
       if (!error) {
           // 成功：在主线程更新 UI
@@ -1086,6 +1086,8 @@ Mach-O 可执行文件
     *   `+initialize` 是在类**第一次接收到消息时**被调用的（懒加载）。
     *   如果一个类和它的 `Category` 都实现了 `+initialize`，那么**只有最后一个被编译器链接的 `Category` 的 `+initialize` 方法会生效**，它会“覆盖”掉原始类和其他 `Category` 的实现。这是因为 `+initialize` 本身就是一个普通的方法调用，遵循 `Category` 的方法覆盖规则。
 
+## ***关联对象如何让category添加属性
+
 ## ***oc内存区域
 
 ### 1. 栈区 (Stack)
@@ -1581,86 +1583,481 @@ Mach-O 可执行文件
 
 ### 方案四：减少图层混合与避免离屏渲染
 
-即使 Cell 的内容和高度都已优化，不恰当的视觉效果设置仍然可能给 GPU 带来沉重负担，导致性能下降。
+## ***ios中有几种复制
 
-#### 1. 问题的根源：GPU 的额外工作
+### **两大核心复制类型：`copy` vs. `mutableCopy`**
 
-**A. 图层混合 (Blending)**
+#### **1. `copy` -> 产生不可变副本**
 
-*   **是什么？** 当多个半透明（alpha < 1.0）的图层叠加在一起时，GPU 需要计算它们混合后的最终颜色。这个计算过程不是简单的颜色覆盖，而是需要读取目标像素颜色，再结合源像素颜色和透明度，通过公式计算出新颜色。
-*   **为什么耗性能？** 这个“读-改-写”的过程比简单地用新颜色覆盖旧颜色（不透明图层）要消耗更多的 GPU 处理能力。如果在一个 `UITableView` 中，每个 Cell 都有多层半透明视图叠加，滑动时 GPU 的负担会非常重。
+*   **调用方法**: `[someObject copy]`
+*   **需要遵守**: `NSCopying` 协议，并实现 `- (id)copyWithZone:(NSZone *)zone;` 方法。 **重要！！！！！**
+*   **核心目的**: 无论原始对象是可变的还是不可变的，调用 `copy` 方法后，你**总是**会得到一个**不可变 (Immutable)** 的副本。
+*   **具体行为**:
+    *   **对不可变对象 (`NSString`, `NSArray`) 调用 `copy`**:
+        *   这通常不会创建一个全新的对象。出于性能优化，它会执行一次**“浅拷贝”**，但实际上更像是**指针拷贝并增加引用计数**。因为原始对象和副本都是不可变的，内容完全一样，没有必要再浪费内存去创建一个一模一样的新对象。所以，返回的只是指向原始对象的另一个指针（引用计数+1）。
+    *   **对可变对象 (`NSMutableString`, `NSMutableArray`) 调用 `copy`**:
+        *   这**会创建一个全新的、不可变的对象** (`NSString`, `NSArray`)。
+        *   新对象的内容与原始可变对象在拷贝那一刻的内容完全相同。
+        *   这是一个非常常见的用法，用于获取一个可变对象的“快照”，确保这个快照在未来不会再被意外修改。
 
-**B. 离屏渲染 (Off-Screen Rendering)**
+#### **2. `mutableCopy` -> 产生可变副本**
 
-*   我们在之前的讨论中已经详细解释过。它会**创建额外的缓冲区**并导致**昂贵的上下文切换**。在 `UITableView` 中，最常见的触发源就是**圆角裁剪**和**阴影**。
+*   **调用方法**: `[someObject mutableCopy]`
+*   **需要遵守**: `NSMutableCopying` 协议，并实现 `- (id)mutableCopyWithZone:(NSZone *)zone;` 方法。**重要！！！！**
+*   **核心目的**: 无论原始对象是可变的还是不可变的，调用 `mutableCopy` 方法后，你**总是**会得到一个**可变 (Mutable)** 的副本。
+*   **具体行为**:
+    *   **对不可变对象 (`NSString`, `NSArray`) 调用 `mutableCopy`**:
+        *   **会创建一个全新的、可变的对象** (`NSMutableString`, `NSMutableArray`)。
+        *   新对象的内容与原始不可变对象的内容相同。
+    *   **对可变对象 (`NSMutableString`, `NSMutableArray`) 调用 `mutableCopy`**:
+        *   **也会创建一个全新的、可变的对象** (`NSMutableString`, `NSMutableArray`)。
+        *   新对象的内容与原始可变对象的内容相同。
 
-#### 2. 优化策略：让 GPU “减负”
+---
 
-核心思想是：**尽量让视图不透明，并避免使用需要多趟渲染才能实现的视觉效果。**
+### **两大复制深度：浅拷贝 vs. 深拷贝**
 
-#### **如何检测？**
+`copy` 和 `mutableCopy` 的默认行为，特别是对于**容器类**（如 `NSArray`, `NSDictionary`），是**浅拷贝**。这是一个极其重要的概念。
 
-*   **图层混合**：在模拟器 `Debug` 菜单中，选择 `Color Blended Layers`。所有发生混合的区域都会被高亮成**红色**。不透明的区域是绿色。你的目标是**尽可能减少红色区域**。
-*   **离屏渲染**：同样在 `Debug` 菜单中，选择 `Color Off-screen Rendered`。触发离屏渲染的区域会高亮成**黄色**。你的目标是**消除不必要的黄色区域**。
+#### **3. 浅拷贝 (Shallow Copy)**
 
-#### **如何优化？**
+*   **定义**: **只复制容器对象本身，而不复制容器内部所引用的元素对象。**
+*   **比喻**: 你复印了一份通讯录。你得到了一本**新的通讯录本子**（新的容器对象），但这本新通讯录上记录的所有人的**电话号码**（指向元素的指针），和旧本子上是**一模一样**的。
+*   **行为**:
+    *   当你执行 `NSMutableArray *newArray = [oldArray mutableCopy];` 时：
+        *   `newArray` 是一个全新的、独立的 `NSMutableArray` 实例。你可以向 `newArray` 中添加或删除元素，而**不会影响** `oldArray`。
+        *   但是，`newArray` 和 `oldArray` 内部的元素，依然是指向**同一批原始对象**的指针。
+*   **后果**: 如果你从 `newArray` 中取出一个 `Person` 对象，并修改了它的属性（`person.name = @"New Name";`），那么当你从 `oldArray` 中取出“同一个” `Person` 对象时，会发现它的 `name` 也被改变了。因为它们本来就是同一个对象。
 
-**A. 减少和消除图层混合**
+#### **4. 深拷贝 (Deep Copy)**
 
-1. **设置 `backgroundColor`**：
+* **定义**: **不仅复制容器对象本身，还会递归地、逐一地复制容器内部所引用的所有元素对象。**
 
-   * **最常见的问题**：`UILabel`, `UIImageView` 等控件默认的 `backgroundColor` 是 `nil`（即透明）。如果它们被放在一个有背景色的父视图上，就会发生图层混合。
+* **行为**:
 
-   * **解决方案**：为 Cell 内的每个视图控件（特别是 `UILabel`）显式设置一个**不透明的背景色**。如果它的背景应该和 Cell 的背景一样，就设置成 Cell 的背景色。
+  *   执行深拷贝后，你会得到一个全新的容器，并且容器里的所有元素也都是全新的、独立的副本。
+  *   修改新容器中任何一个元素的状态，**绝对不会**影响到原始容器中的任何元素。
 
-     ```objc
-     // 在 MyTableViewCell.m 中
-     myLabel.backgroundColor = [UIColor whiteColor]; // 或者 self.contentView.backgroundColor
-     myLabel.layer.masksToBounds = YES; // 对于 UILabel，设置这个可以进一步优化性能
-     ```
+* **如何实现**:
 
-2. **设置 `opaque` 属性**：
+  * Objective-C **没有一个通用的、系统级的 `deepCopy` 方法**。因为框架不知道你的自定义对象应该如何进行深拷贝。
 
-   *   向系统表明这个视图是完全不透明的。这可以让渲染系统进行一些优化，比如在绘制时跳过其后面的任何内容。
-   *   当你确定一个视图（及其子视图）完全不透明时，可以设置 `view.layer.opaque = YES;`。`UIImageView` 默认就是 `YES`。
+  * 你必须**自己实现**深拷贝逻辑。
 
-3. **避免使用 `alpha` < 1.0**：
+  * **对于容器类**: Foundation 提供了一个便利的初始化方法来实现深拷贝：
 
-   *   如果只是想让一个视图的颜色变浅，**不要**直接设置 `view.alpha = 0.8;`。
-   *   **更好的方法**是计算出一个混合后的**不透明颜色**，并直接使用这个颜色。例如，如果背景是白色，你想要一个 80% 透明度的黑色文字，那么直接设置文字颜色为 20% 的灰色 (`[UIColor colorWithWhite:0.2 alpha:1.0]`) 效果是一样的，但完全不透明。
+    ```objc
+    // `copyItems:YES` 会遍历 `originalArray`，并对其中的每一个元素调用 `copy` 方法。
+    // 这要求数组中的所有元素都必须遵守 `NSCopying` 协议。
+    NSArray *deepCopiedArray = [[NSArray alloc] initWithArray:originalArray copyItems:YES];
+    ```
 
-**B. 避免离屏渲染**
+    **注意**: 这依然是一个“一层”的深拷贝。如果数组元素 `Person` 内部还有一个 `Car` 对象，这个 `Car` 对象是不会被拷贝的，除非你在 `Person` 的 `copyWithZone:` 方法里自己去实现对 `Car` 的拷贝。
 
-我们在之前的讨论中已经详细列出了策略，这里针对 `UITableView` 场景再强调一下：
+  * **对于自定义对象**: 你需要在你自己的 `copyWithZone:` 实现中，对需要深拷贝的属性，也调用 `copy` 或 `mutableCopy`。
 
-1. **圆角 (`cornerRadius` + `masksToBounds`)**：
+    ```objc
+    - (id)copyWithZone:(NSZone *)zone {
+        MyObject *copy = [[MyObject allocWithZone:zone] init];
+        // 对 name 属性进行 copy，确保它是一个新的字符串实例
+        copy.name = [self.name copy]; 
+        // 对 array 属性进行深拷贝
+        copy.myArray = [[NSMutableArray alloc] initWithArray:self.myArray copyItems:YES];
+        return copy;
+    }
+    ```
 
-   *   **最佳方案**：让 UI 设计师直接提供带圆角的图片。
-   *   **次优方案**：使用 `CAShapeLayer` 作为 `mask`，或者在后台线程异步绘制圆角图片。
-   *   **避免**：直接在 `cellForRowAtIndexPath` 中对 Cell 的 `layer` 设置 `cornerRadius` 和 `masksToBounds`。
+## ***runtime
 
-2. **阴影 (`shadow`)**：
+### 面试官：“同学，讲一下你对 Runtime 的理解吧”
 
-   * **必须**设置 `shadowPath` 来预先告诉 Core Animation 阴影的形状，避免离屏计算。
+**面试官，您好。我对 Runtime 的理解是，它更像是一套处于 Objective-C 底层的、用 C 语言实现的 API 库。它的核心作用，就是把 C 语言这种静态语言的很多决策，比如调用哪个函数，都从“编译时”推迟到了“运行时”来做，这就赋予了 Objective-C 极致的动态性。**
 
-     ```objc
-     // 在 MyTableViewCell.m 的 layoutSubviews 方法中设置
-     - (void)layoutSubviews {
-         [super layoutSubviews];
-         self.layer.shadowPath = [UIBezierPath bezierPathWithRect:self.bounds].CGPath;
-     }
-     ```
+---
 
-3. **光栅化 (`shouldRasterize`)**：
+#### 第二步：解释核心机制【我怎么工作的？】
 
-   *   再次强调，这是一个**缓存**机制，它本身会**触发一次离屏渲染**。
-   *   **明智地使用它**：只对那些内容**静态不变**但视觉效果复杂（比如包含阴影、圆角、多种控件）的 Cell 开启，可以极大提升后续滚动的性能。对于内容频繁变化的 Cell，则要禁用。
+**这种动态性的实现，主要依赖于它的“消息发送机制”。我们平时写的 `[anObject aMethod]`，在编译后其实并不会直接调用方法，而是会被转化成一个 C 函数调用，也就是 `objc_msgSend(anObject, @selector(aMethod))`。**
 
-#### 核心要点
+**`objc_msgSend` 函数在运行时会做几件事：**
 
-*   **打开调试开关**：善用 `Color Blended Layers` (红色) 和 `Color Off-screen Rendered` (黄色) 来定位问题。
-*   **消灭红色 (混合)**：给控件设置**不透明的背景色**，避免使用 `alpha` 透明度。
-*   **消灭黄色 (离屏)**：高效处理**圆角**和**阴影**，这是 `UITableView` 中最常见的离屏渲染来源。
+1.  首先，通过对象的 `isa` 指针找到它的类。
+2.  然后在类的缓存和方法列表里，根据方法名 `@selector(aMethod)` 去查找对应的函数指针（IMP）。
+3.  如果找到了，就执行这个函数。
+4.  如果在本类找不到，就会沿着继承链去父类里找。
+5.  如果一直到根类都找不到，Runtime 也不会马上崩溃，而是会启动一套**消息转发**流程，给我们机会去补救。
+
+**所以，调用哪个方法，是在运行时才通过这套查找机制动态确定的。**
+
+---
+
+#### 第三步：举出实际应用【我能用来做什么？】
+
+**正是因为 Runtime 的这套动态机制，我们才能在实际开发中实现很多强大的功能。我举几个最典型的例子：**
+
+1.  **方法交换 (Method Swizzling)**：我们可以在运行时动态地交换两个方法的实现。最经典的应用就是做“埋点”，比如在不修改原有代码的情况下，我们可以 hook 掉所有 `UIViewController` 的 `viewWillAppear:` 方法，在里面加入我们自己的统计代码，实现对所有页面展示的全局监控。这是一种 AOP（面向切面编程）思想的体现。
+2.  **动态添加属性 (Associated Objects)**：我们都知道 Category 不能直接添加实例变量，但借助 Runtime 的关联对象技术，我们就可以在运行时为一个已有的类“附加”上新的属性，极大地扩展了 Category 的能力。
+
+---
+
+### 二、技术原理：操纵方法列表
+
+我们再回顾一下 Runtime 的核心：一个类（`Class`）内部有一张“方法列表”，记录着这个类能响应的所有方法。
+
+这个列表里的每一项（`Method`）都包含两个关键信息：
+
+1.  **方法名 (SEL)**：方法的选择器，比如 `viewWillAppear:`。
+2.  **方法实现 (IMP)**：一个函数指针，指向真正要执行的代码。
+
+`SEL` 和 `IMP` 像钥匙和门一样配对。`[vc viewWillAppear:YES]` 就是用 `viewWillAppear:` 这把钥匙（SEL），去打开它对应的那扇门（IMP）。
+
+**方法交换，就是把两把钥匙对应的门（IMP）给互换了。**
+
+*   原来：`viewWillAppear:` -> 指向 -> **原始的实现代码**
+*   我们新增一个方法：`my_viewWillAppear:` -> 指向 -> **我们新增的带统计功能的代码**
+
+**交换后：**
+
+*   `viewWillAppear:` -> 指向 -> **我们新增的带统计功能的代码**
+*   `my_viewWillAppear:` -> 指向 -> **原始的实现代码**
+
+这样，当系统再调用 `[vc viewWillAppear:YES]` 时，它实际上执行的是我们写的代码。而在我们自己的代码里，再调用一下 `[self my_viewWillAppear:YES]`，就等于调用了原始的实现，保证了原有功能不丢失。
+
+---
+
+### 三、实战演练：Hook `UIViewController` 的 `viewWillAppear:`
+
+这是一个最经典、最实用的例子：我们想在每个视图控制器出现时都打印一条日志，但又不想去修改每一个 `UIViewController` 子类。
+
+#### 步骤1：创建 Category
+
+这是做方法交换最规范的方式。为 `UIViewController` 创建一个 Category，比如叫 `UIViewController+Logging`。
+
+#### 步骤2：在 `+load` 方法中进行交换
+
+`+load` 方法非常特殊，它在类被加载到内存时就会自动调用，而且只调用一次，是执行方法交换最安全的地方。
+
+```objectivec
+// UIViewController+Logging.m
+#import "UIViewController+Logging.h"
+#import <objc/runtime.h> // 必须引入 Runtime 头文件
+
+@implementation UIViewController (Logging)
+
+// +load 方法会在类加载时自动调用，且只会调用一次
++ (void)load {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        
+        // 拿到 UIViewController 类
+        Class class = [self class];
+
+        // 1. 获取原始方法
+        SEL originalSelector = @selector(viewWillAppear:);
+        Method originalMethod = class_getInstanceMethod(class, originalSelector);
+
+        // 2. 获取我们自己实现的方法
+        SEL swizzledSelector = @selector(my_viewWillAppear:);
+        Method swizzledMethod = class_getInstanceMethod(class, swizzledSelector);
+
+        // 3. 交换！
+        // 这一步是核心，直接交换两个方法的 IMP
+        method_exchangeImplementations(originalMethod, swizzledMethod);
+    });
+}
+
+// 4. 我们自己的方法实现
+- (void)my_viewWillAppear:(BOOL)animated {
+    // 在这里，加入我们想注入的代码
+    NSLog(@"页面即将出现: %@", NSStringFromClass([self class]));
+
+    // 关键！调用自己，但实际上因为 IMP 已经交换，
+    // 这里调用的是系统原始的 viewWillAppear: 实现
+    [self my_viewWillAppear:animated];
+}
+
+@end
+```
+
+**代码讲解：**
+
+1.  **`+load` 和 `dispatch_once`**：`+load`保证了交换操作在程序启动时就完成。`dispatch_once` 是一个额外的保险，确保即使在复杂的环境下，交换代码也绝对只执行一次。
+2.  **获取 `Method`**：使用 `class_getInstanceMethod` 来获取类中特定 `SEL` 对应的 `Method` 对象。这个对象里包含了 IMP 的信息。
+3.  **`method_exchangeImplementations`**：这是 Runtime 提供的一个最直接的交换函数。它接收两个 `Method` 对象，然后把它们的 IMP 互相替换掉。简单粗暴，非常有效。
+4.  **实现自定义方法**：我们的 `my_viewWillAppear:` 方法是新的入口。
+    *   第一行，执行我们自己的逻辑（打印日志）。
+    *   第二行，`[self my_viewWillAppear:animated]`，**这是最容易让人困惑的地方！** 你可能会想，这不是在调用自己，导致无限循环吗？
+        *   **绝对不会！** 因为在 `+load` 里，`my_viewWillAppear:` 这个 `SEL` 指向的 `IMP` 已经被换成了系统**原始**的 `viewWillAppear:` 的实现。所以这里虽然方法名叫 `my_viewWillAppear:`，但它执行的却是系统原始的功能。
+
+现在，你项目里任何一个 `UIViewController`（或其子类）在即将显示时，控制台都会自动打印出一条日志，而你没有动过任何业务代码！
+
+### 2. 能做什么（常见功能）
+
+- **消息机制**：调用方法实际上是给对象发送消息。
+- **动态特性**：
+  - 动态添加方法（`class_addMethod`）。
+  - 方法交换（Method Swizzling）。
+  - 动态解析未实现的方法。
+- **KVC/KVO**：底层依赖 runtime 实现。
+
+## ***kvo和kvc
+
+### KVO 原理深入解析：动态子类与 isa-swizzling
+
+KVO（Key-Value Observing），即键值观察，是 Objective-C 中一种强大的设计模式，允许一个对象监听另一个对象特定属性的变更。其实现核心依赖于 Objective-C 的动态特性，特别是 `isa-swizzling` 和动态子类创建。
+
+#### KVO 的核心实现原理
+
+当您为一个对象的属性首次添加观察者时，系统会在运行时执行一系列操作，从而实现 KVO：
+
+1.  **动态创建子类**：系统会动态地创建一个被观察对象所属类的一个子类。这个新的子类名通常以 `NSKVONotifying_` 作为前缀，例如，如果您观察 `Person` 类的对象，系统会创建一个名为 `NSKVONotifying_Person` 的新类。
+2.  **`isa` 指针交换（isa-swizzling）**：被观察对象的 `isa` 指针，原本指向其原始类（如 `Person`），现在会被修改为指向新创建的动态子类 (`NSKVONotifying_Person`)。这个过程被称为 `isa-swizzling`。因此，尽管开发者在代码中看到的仍然是原始类的实例，但其在运行时的实际类型已经变为动态生成的子类。
+3.  **重写属性的 setter 方法**：动态创建的子类会重写被观察属性的 `setter` 方法。例如，如果您观察 `age` 属性，`setAge:` 方法就会被重写。在这个重写的方法中，系统会执行以下操作：
+    *   在调用原始的 `setter` 方法之前，先调用 `willChangeValueForKey:` 方法，通知系统该属性即将发生变化。
+    *   调用父类（即原始类）的 `setter` 方法，实际地改变属性值。
+    *   在调用原始的 `setter` 方法之后，再调用 `didChangeValueForKey:` 方法，通知系统该属性已经发生变化。
+4.  **触发观察者方法**：`didChangeValueForKey:` 方法的内部实现会负责调用观察者的 `observeValueForKeyPath:ofObject:change:context:` 方法，从而将属性变更的通知传递给观察者。
+
+**kvc**
+ KVC是 **Objective-C 的一种间接访问对象属性的机制**，让你可以用字符串（key）去访问或修改对象的属性，而不是直接调用 getter/setter 方法。
+
+------
+
+一、**基本使用回顾**
+
+```objc
+Person *p = [[Person alloc] init];
+[p setValue:@"Tom" forKey:@"name"];
+NSString *n = [p valueForKey:@"name"];
+```
+
+这里 `@"name"` 就是 key，KVC 会自动去找对应的属性或方法来完成取值/赋值。
+
+------
+
+**二、KVC 的底层原理**
+
+KVC 的核心实现类是 **`NSKeyValueCoding`** 分类在 `NSObject` 上定义的一组方法。
+ 当你调用 `setValue:forKey:` 或 `valueForKey:` 时，系统会按照一定的**查找顺序**执行。
+
+------
+
+### 🍎 1. `setValue:forKey:` 的底层查找流程
+
+以 `setValue:@"Tom" forKey:@"name"` 为例：
+
+#### (1) 优先查找 setter 方法
+
+按顺序查找以下方法并调用：
+
+1. `setName:`
+2. `_setName:`
+
+找到就直接调用。
+
+------
+
+#### (2) 如果没找到 setter，就查找实例变量（ivar）
+
+按顺序查找成员变量名：
+
+1. `_name`
+2. `_isName`
+3. `name`
+4. `isName`
+
+找到后通过 **Runtime 直接赋值**（`object_setIvar()`）。
+
+------
+
+#### (3) 如果仍然找不到
+
+调用：
+
+```objc
+- (void)setValue:(id)value forUndefinedKey:(NSString *)key
+```
+
+默认实现会抛异常。
+ 但你可以重写它来处理动态键值。
+
+------
+
+### 🍏 2. `valueForKey:` 的查找流程
+
+以 `[p valueForKey:@"name"]` 为例：
+
+#### (1) 优先查找 getter 方法
+
+按顺序查找：
+
+1. `getName`
+2. `name`
+3. `isName`
+4. `_name`
+
+找到就直接调用。
+
+------
+
+#### (2) 如果没找到方法，就找实例变量
+
+顺序与上面类似：
+ `_name` → `_isName` → `name` → `isName`
+
+找到后通过 Runtime 获取值。
+
+------
+
+#### (3) 若都没有找到
+
+调用：
+
+```objc
+- (id)valueForUndefinedKey:(NSString *)key
+```
+
+默认抛异常，可以重写来自定义逻辑。
+
+**三、KVC 与 Runtime 的关系**
+
+KVC 是通过 **Objective-C Runtime** 来实现的动态查找与赋值。
+ 在底层，KVC 在找不到 setter/getter 时，会直接用：
+
+- `class_getInstanceVariable()` 查找 ivar；
+- `object_getIvar()` / `object_setIvar()` 访问成员变量。
+
+因此：
+
+- 它可以访问 `@private` 的属性；
+- 可以绕过 setter/getter；
+- 同时也是 **KVO（键值观察）机制的基础**。
+
+------
+
+**四、KVC 的应用**
+
+- 简化访问、修改对象属性；
+- 实现动态赋值（如解析 JSON）；
+- KVO（键值观察）依赖于 KVC；
+- 支持 `keyPath`（如 `"person.address.city"`）。
+
+------
+
+**五、总结一句话记忆：**
+
+> **KVC 是通过字符串 key 动态访问属性的机制，底层通过方法查找 + Runtime 直接操作 ivar 实现。**
+
+
+
+## instance对象、类对象、元对象、isa指针
+
+好的，这是一个非常深入且核心的 Objective-C 问题。我们来详细拆解一下 Objective-C 对象、它的类（Class）以及它们在内存中的分布。
+
+为了更好地理解，我们把它分为三个部分：
+
+1.  **实例对象 (Instance) 在内存中是什么样的？** (我们平时 `alloc init` 出来的东西)
+2.  **类对象 (Class) 里面有什么？** (实例对象的 `isa` 指向的东西)
+3.  **元类对象 (Metaclass) 是什么？** (类对象的 `isa` 指向的东西)
+
+---
+
+### Part 1: 实例对象 (Instance Object) 的内存布局
+
+当我们写下如下代码时：
+
+```objc
+// 定义一个 Person 类
+@interface Person : NSObject
+{
+    NSString *_name; // 实例变量
+    int _age;        // 实例变量
+}
+@end
+
+// 创建一个实例
+Person *person = [[Person alloc] init];
+```
+
+这个 `person` 对象在内存中的结构非常简单，它基本上就是：
+
+1.  **一个 `isa` 指针**
+2.  **所有成员变量（的值**
+
+### Part 2: 类对象  的内部结构
+
+`isa` 指针指向的是一个**类对象**。在 Objective-C 中，**类本身也是一个对象**。`Person` 这个类，在内存中也存在一个唯一的、类型为 `Class` 的对象。
+
+这个类对象存储了描述一个类的所有“元信息”，也就是“蓝图”信息。它主要包含以下内容：
+
+1.  **`isa` 指针**: 是的，类对象自己也有一个 `isa` 指针。它指向这个类的**元类（Metaclass）**。
+2.  **`superclass` 指针**: 指向其父类的**类对象**。例如，`Person` 的 `superclass` 指针就指向 `NSObject` 的类对象。这个指针构成了继承链。
+3.  **方法缓存 **: 一个为了性能优化的缓存。当一个方法被调用后，其指针和选择器（selector）会被缓存到这里，下次再调用同一个方法时，运行时可以直接从缓存中查找，速度极快。
+4.  **类信息 **: 这是一个包含了几乎所有核心信息的复杂结构。通过它可以访问到一个 `class_ro_t` (Read-Only) 的结构体，里面存储了类的“只读”信息，包括：
+    *   **实例变量列表 (`ivar_list_t`)**: 描述了这个类的所有成员变量的名称、类型、内存偏移量等。
+    *   **实例方法列表 (`method_list_t`)**: **这是最重要的部分**，它存储了这个类的所有**实例方法**（减号 `-` 方法）的实现（IMP）、选择器（SEL）和类型编码。
+    *   **属性列表 (`property_list_t`)**: `@property` 声明的属性信息。
+    *   **协议列表 (`protocol_list_t`)**: 这个类遵守的所有协议。
+
+
+
+### Part 3: 元类对象 (Metaclass Object)
+
+我们已经知道，类对象也有一个 `isa` 指针，那它指向哪里呢？答案是**元类对象 (Metaclass)**。
+
+**为什么需要元类？**
+
+Objective-C 的设计哲学是“一切皆对象”，消息发送是其核心机制。我们调用实例方法是向实例对象发送消息，例如 `[person instanceMethod]`。
+
+那么，当我们调用一个**类方法**（加号 `+` 方法）时，例如 `[Person aClassMethod]`，消息是发送给谁的呢？答案是发送给**类对象**。
+
+既然类对象也要能响应消息（调用方法），那么它也必须符合对象的定义，即它也需要有一个“类”来描述它自己，这个“类”就是**元类**。
+
+**元类的核心作用**：
+
+*   **存储类方法**：元类对象的结构和类对象非常相似，但它的方法列表里存储的是**类方法**（`+` 方法）的定义。
+
+所以，整个关系链是：
+
+1.  **实例对象**的 `isa` 指向其**类对象**。
+2.  **类对象**的 `isa` 指向其**元类对象**。
+3.  **元类对象**的 `isa` 指向根元类（通常是 `NSObject` 的元类）。
+4.  根元类的 `isa` 最终指向它自己，形成一个闭环。
+
+*   **`isa` 链 (纵向)**: `实例` -> `类` -> `元类` -> `根元类`。这条链用于**消息发送**时查找方法的实现。调用实例方法时，从“类”开始找；调用类方法时，从“元类”开始找。
+*   **`superclass` 链 (横向)**: `子类` -> `父类` -> `NSObject` -> `nil`。这条链用于**继承**。当在本类的方法列表中找不到方法时，会沿着这条链向上查找。
+
+*   *   
+
+### 总结与示例
+
+```objc
+NSString *globalString; // 未初始化，存放在 BSS 段
+
+NSString *initializedGlobalString = @"Global"; // 已初始化，存放在数据段
+
+- (void)memoryExample {
+    // 'a' 是局部变量，存放在栈区
+    int a = 10;
+
+    // 'str' 这个指针本身存放在栈区
+    // @"Hello" 这个字符串常量存放在常量区
+    // str 指向常量区
+    NSString *str = @"Hello";
+
+    // 'array' 这个指针存放在栈区
+    // [[NSMutableArray alloc] init] 创建的 NSMutableArray 对象实体存放在堆区
+    // array 指向堆区
+    NSMutableArray *array = [[NSMutableArray alloc] init];
+
+    // 'staticVar' 是静态局部变量，存放在数据段 (因为它被初始化了)
+    static int staticVar = 100;
+    
+    // ... 当方法执行结束时 ...
+    // 'a', 'str', 'array' 这三个栈上的指针被销毁
+    // 'array' 指向的堆上对象因为没有其他强引用，其引用计数变为0，被ARC回收
+}
+```
 
 ## 如何扩大一个button的响应范围
 
@@ -1981,77 +2378,6 @@ for (MyDataModel *model in dataModels) {
 
 ## 想统计所有类中哪些方法耗时最高 怎么统计 oc
 
-好的，这是一个非常典型的iOS性能监控和APM（Application Performance Management）领域的问题。要统计所有OC类中方法的耗时，并且找出最耗时的方法，我们不能手动去给每个方法加代码，那样不现实。
-
-正确的方法是利用Objective-C语言强大的**动态特性**，特别是**方法交换 (Method Swizzling)** 和 **消息转发 (Message Forwarding)**。
-
-核心思想是：**在运行时，用我们自己写的“监控”方法，去替换掉所有我们想监控的原始方法的实现。这样，当原始方法被调用时，会先执行我们的监控代码（记录时间），然后我们再手动调用原始的实现，等原始实现执行完毕后，再次记录时间，计算出差值，就得到了方法的耗时。**
-
-下面我将详细介绍几种实现方案，从简单概念到工业级实现。
-
----
-
-### **方案一：基于 Method Swizzling 的简单实现（核心概念）**
-
-这是最基础、最核心的技术，面试时必须掌握。它利用 `method_exchangeImplementations` 函数来交换两个方法的IMP（Implementation，指向函数实现的指针）。
-
-**核心步骤：**
-
-1.  **创建一个分类 (Category):** 为 `NSObject` 创建一个分类，因为我们想监控所有继承自 `NSObject` 的类。
-
-2.  **定义一个“钩子”方法:** 在分类中定义一个我们自己的方法，比如 `apm_hooked_method`。这个方法的签名（参数、返回值）必须与我们想要hook的方法完全一样，但这在监控所有方法时很难做到。所以，一个更通用的方法是hook `forwardInvocation:`。但我们先从简单的开始，假设我们只hook无参方法。
-
-3.  **在 `+load` 方法中执行交换:** `+load` 方法在类被加载到内存时会自动调用，是执行方法交换最安全、最合适的时机。
-
-**示例代码 (仅用于演示hook一个特定方法，比如 `viewDidLoad`):**
-
-```objectivec
-// UIViewController+APM.m
-#import <objc/runtime.h>
-
-@implementation UIViewController (APM)
-
-+ (void)load {
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        // 获取原始方法
-        SEL originalSelector = @selector(viewDidLoad);
-        Method originalMethod = class_getInstanceMethod(self, originalSelector);
-
-        // 获取我们自己的钩子方法
-        SEL swizzledSelector = @selector(apm_viewDidLoad);
-        Method swizzledMethod = class_getInstanceMethod(self, swizzledSelector);
-
-        // 交换两个方法的实现
-        method_exchangeImplementations(originalMethod, swizzledMethod);
-    });
-}
-
-- (void)apm_viewDidLoad {
-    // 1. 记录开始时间
-    CFAbsoluteTime startTime = CFAbsoluteTimeGetCurrent();
-
-    // 2. 调用原始实现
-    // 因为方法实现已经被交换了，所以这里调用 apm_viewDidLoad 实际上是在调用原始的 viewDidLoad
-    [self apm_viewDidLoad]; 
-
-    // 3. 记录结束时间并计算耗时
-    CFAbsoluteTime endTime = CFAbsoluteTimeGetCurrent();
-    NSTimeInterval cost = (endTime - startTime) * 1000.0; // 转换为毫秒
-
-    // 4. 上报或打印耗时
-    // 注意：这里不能打印 self，可能会导致死循环。打印 className 和方法名。
-    NSLog(@"-[%@ %@] cost: %.2f ms", NSStringFromClass([self class]), @"viewDidLoad", cost);
-}
-
-@end
-```
-**这种方法的局限性：**
-*   **无法通用：** 你不可能为成千上万个不同的方法签名都写一个对应的 `apm_` 方法。
-*   **粒度太粗：** `+load` 里只能交换当前类的方法，无法遍历所有类。
-
----
-
 ### **方案二：基于消息转发 (Message Forwarding) 的通用方案（工业级思路）**
 
 要实现**“统计所有类中所有方法”**这个宏伟目标，我们需要更强大的武器——**消息转发机制**。
@@ -2191,90 +2517,6 @@ self.count = self.count + 1;
 3.  调用setter将新值写回`self.count`。
 
 `atomic`只保证了第1步和第3步各自的原子性，但无法保证在第1步和第3步之间没有其他线程修改`self.count`。因此，这可能会导致更新丢失的问题。要实现这种复合操作的线程安全，需要使用更明确的锁机制，如`@synchronized`或GCD。
-
-## ios中有几种复制
-
-### **两大核心复制类型：`copy` vs. `mutableCopy`**
-
-#### **1. `copy` -> 产生不可变副本**
-
-*   **调用方法**: `[someObject copy]`
-*   **需要遵守**: `NSCopying` 协议，并实现 `- (id)copyWithZone:(NSZone *)zone;` 方法。 **重要！！！！！**
-*   **核心目的**: 无论原始对象是可变的还是不可变的，调用 `copy` 方法后，你**总是**会得到一个**不可变 (Immutable)** 的副本。
-*   **具体行为**:
-    *   **对不可变对象 (`NSString`, `NSArray`) 调用 `copy`**:
-        *   这通常不会创建一个全新的对象。出于性能优化，它会执行一次**“浅拷贝”**，但实际上更像是**指针拷贝并增加引用计数**。因为原始对象和副本都是不可变的，内容完全一样，没有必要再浪费内存去创建一个一模一样的新对象。所以，返回的只是指向原始对象的另一个指针（引用计数+1）。
-    *   **对可变对象 (`NSMutableString`, `NSMutableArray`) 调用 `copy`**:
-        *   这**会创建一个全新的、不可变的对象** (`NSString`, `NSArray`)。
-        *   新对象的内容与原始可变对象在拷贝那一刻的内容完全相同。
-        *   这是一个非常常见的用法，用于获取一个可变对象的“快照”，确保这个快照在未来不会再被意外修改。
-
-#### **2. `mutableCopy` -> 产生可变副本**
-
-*   **调用方法**: `[someObject mutableCopy]`
-*   **需要遵守**: `NSMutableCopying` 协议，并实现 `- (id)mutableCopyWithZone:(NSZone *)zone;` 方法。**重要！！！！**
-*   **核心目的**: 无论原始对象是可变的还是不可变的，调用 `mutableCopy` 方法后，你**总是**会得到一个**可变 (Mutable)** 的副本。
-*   **具体行为**:
-    *   **对不可变对象 (`NSString`, `NSArray`) 调用 `mutableCopy`**:
-        *   **会创建一个全新的、可变的对象** (`NSMutableString`, `NSMutableArray`)。
-        *   新对象的内容与原始不可变对象的内容相同。
-    *   **对可变对象 (`NSMutableString`, `NSMutableArray`) 调用 `mutableCopy`**:
-        *   **也会创建一个全新的、可变的对象** (`NSMutableString`, `NSMutableArray`)。
-        *   新对象的内容与原始可变对象的内容相同。
-
----
-
-### **两大复制深度：浅拷贝 vs. 深拷贝**
-
-`copy` 和 `mutableCopy` 的默认行为，特别是对于**容器类**（如 `NSArray`, `NSDictionary`），是**浅拷贝**。这是一个极其重要的概念。
-
-#### **3. 浅拷贝 (Shallow Copy)**
-
-*   **定义**: **只复制容器对象本身，而不复制容器内部所引用的元素对象。**
-*   **比喻**: 你复印了一份通讯录。你得到了一本**新的通讯录本子**（新的容器对象），但这本新通讯录上记录的所有人的**电话号码**（指向元素的指针），和旧本子上是**一模一样**的。
-*   **行为**:
-    *   当你执行 `NSMutableArray *newArray = [oldArray mutableCopy];` 时：
-        *   `newArray` 是一个全新的、独立的 `NSMutableArray` 实例。你可以向 `newArray` 中添加或删除元素，而**不会影响** `oldArray`。
-        *   但是，`newArray` 和 `oldArray` 内部的元素，依然是指向**同一批原始对象**的指针。
-*   **后果**: 如果你从 `newArray` 中取出一个 `Person` 对象，并修改了它的属性（`person.name = @"New Name";`），那么当你从 `oldArray` 中取出“同一个” `Person` 对象时，会发现它的 `name` 也被改变了。因为它们本来就是同一个对象。
-
-#### **4. 深拷贝 (Deep Copy)**
-
-* **定义**: **不仅复制容器对象本身，还会递归地、逐一地复制容器内部所引用的所有元素对象。**
-
-* **行为**:
-
-  *   执行深拷贝后，你会得到一个全新的容器，并且容器里的所有元素也都是全新的、独立的副本。
-  *   修改新容器中任何一个元素的状态，**绝对不会**影响到原始容器中的任何元素。
-
-* **如何实现**:
-
-  * Objective-C **没有一个通用的、系统级的 `deepCopy` 方法**。因为框架不知道你的自定义对象应该如何进行深拷贝。
-
-  * 你必须**自己实现**深拷贝逻辑。
-
-  * **对于容器类**: Foundation 提供了一个便利的初始化方法来实现深拷贝：
-
-    ```objc
-    // `copyItems:YES` 会遍历 `originalArray`，并对其中的每一个元素调用 `copy` 方法。
-    // 这要求数组中的所有元素都必须遵守 `NSCopying` 协议。
-    NSArray *deepCopiedArray = [[NSArray alloc] initWithArray:originalArray copyItems:YES];
-    ```
-
-    **注意**: 这依然是一个“一层”的深拷贝。如果数组元素 `Person` 内部还有一个 `Car` 对象，这个 `Car` 对象是不会被拷贝的，除非你在 `Person` 的 `copyWithZone:` 方法里自己去实现对 `Car` 的拷贝。
-
-  * **对于自定义对象**: 你需要在你自己的 `copyWithZone:` 实现中，对需要深拷贝的属性，也调用 `copy` 或 `mutableCopy`。
-
-    ```objc
-    - (id)copyWithZone:(NSZone *)zone {
-        MyObject *copy = [[MyObject allocWithZone:zone] init];
-        // 对 name 属性进行 copy，确保它是一个新的字符串实例
-        copy.name = [self.name copy]; 
-        // 对 array 属性进行深拷贝
-        copy.myArray = [[NSMutableArray alloc] initWithArray:self.myArray copyItems:YES];
-        return copy;
-    }
-    ```
 
 
 
@@ -2469,6 +2711,8 @@ objc_autoreleasePoolPop(pool);
 用类方法**的便利构造器**创造的对象都会加入自动释放池，因为默认要遵守 谁创造谁释放的原则，所以这些对象离开方法之后要延迟释放，只能用pool
 
 ## autoReleasePool在什么情况下释放
+
+每次runloop结束就会释放
 
 ## CGfloat 和 float说说 有什么区别
 
@@ -2966,307 +3210,6 @@ NSThread *thread = [[NSThread alloc] initWithBlock:^{
 1. **RunLoop 不会无缘无故保持运行**，必须有事件源（Port、Timer、Source）。
 2. **GCD** 线程池里的线程不能这么保活，因为它们是系统管理的。
 3. 子线程保活后，要注意避免内存泄漏或死循环，确保退出机制。
-
-## runtime
-
-### 面试官：“同学，讲一下你对 Runtime 的理解吧”
-
-**面试官，您好。我对 Runtime 的理解是，它更像是一套处于 Objective-C 底层的、用 C 语言实现的 API 库。它的核心作用，就是把 C 语言这种静态语言的很多决策，比如调用哪个函数，都从“编译时”推迟到了“运行时”来做，这就赋予了 Objective-C 极致的动态性。**
-
----
-
-#### 第二步：解释核心机制【我怎么工作的？】
-
-**这种动态性的实现，主要依赖于它的“消息发送机制”。我们平时写的 `[anObject aMethod]`，在编译后其实并不会直接调用方法，而是会被转化成一个 C 函数调用，也就是 `objc_msgSend(anObject, @selector(aMethod))`。**
-
-**`objc_msgSend` 函数在运行时会做几件事：**
-1.  首先，通过对象的 `isa` 指针找到它的类。
-2.  然后在类的缓存和方法列表里，根据方法名 `@selector(aMethod)` 去查找对应的函数指针（IMP）。
-3.  如果找到了，就执行这个函数。
-4.  如果在本类找不到，就会沿着继承链去父类里找。
-5.  如果一直到根类都找不到，Runtime 也不会马上崩溃，而是会启动一套**消息转发**流程，给我们机会去补救。
-
-**所以，调用哪个方法，是在运行时才通过这套查找机制动态确定的。**
-
----
-
-#### 第三步：举出实际应用【我能用来做什么？】
-
-**正是因为 Runtime 的这套动态机制，我们才能在实际开发中实现很多强大的功能。我举几个最典型的例子：**
-
-1.  **方法交换 (Method Swizzling)**：我们可以在运行时动态地交换两个方法的实现。最经典的应用就是做“埋点”，比如在不修改原有代码的情况下，我们可以 hook 掉所有 `UIViewController` 的 `viewWillAppear:` 方法，在里面加入我们自己的统计代码，实现对所有页面展示的全局监控。这是一种 AOP（面向切面编程）思想的体现。
-2.  **动态添加属性 (Associated Objects)**：我们都知道 Category 不能直接添加实例变量，但借助 Runtime 的关联对象技术，我们就可以在运行时为一个已有的类“附加”上新的属性，极大地扩展了 Category 的能力。
-
----
-
-### 二、技术原理：操纵方法列表
-
-我们再回顾一下 Runtime 的核心：一个类（`Class`）内部有一张“方法列表”，记录着这个类能响应的所有方法。
-
-这个列表里的每一项（`Method`）都包含两个关键信息：
-1.  **方法名 (SEL)**：方法的选择器，比如 `viewWillAppear:`。
-2.  **方法实现 (IMP)**：一个函数指针，指向真正要执行的代码。
-
-`SEL` 和 `IMP` 像钥匙和门一样配对。`[vc viewWillAppear:YES]` 就是用 `viewWillAppear:` 这把钥匙（SEL），去打开它对应的那扇门（IMP）。
-
-**方法交换，就是把两把钥匙对应的门（IMP）给互换了。**
-
-*   原来：`viewWillAppear:` -> 指向 -> **原始的实现代码**
-*   我们新增一个方法：`my_viewWillAppear:` -> 指向 -> **我们新增的带统计功能的代码**
-
-**交换后：**
-
-*   `viewWillAppear:` -> 指向 -> **我们新增的带统计功能的代码**
-*   `my_viewWillAppear:` -> 指向 -> **原始的实现代码**
-
-这样，当系统再调用 `[vc viewWillAppear:YES]` 时，它实际上执行的是我们写的代码。而在我们自己的代码里，再调用一下 `[self my_viewWillAppear:YES]`，就等于调用了原始的实现，保证了原有功能不丢失。
-
----
-
-### 三、实战演练：Hook `UIViewController` 的 `viewWillAppear:`
-
-这是一个最经典、最实用的例子：我们想在每个视图控制器出现时都打印一条日志，但又不想去修改每一个 `UIViewController` 子类。
-
-#### 步骤1：创建 Category
-
-这是做方法交换最规范的方式。为 `UIViewController` 创建一个 Category，比如叫 `UIViewController+Logging`。
-
-#### 步骤2：在 `+load` 方法中进行交换
-
-`+load` 方法非常特殊，它在类被加载到内存时就会自动调用，而且只调用一次，是执行方法交换最安全的地方。
-
-```objectivec
-// UIViewController+Logging.m
-#import "UIViewController+Logging.h"
-#import <objc/runtime.h> // 必须引入 Runtime 头文件
-
-@implementation UIViewController (Logging)
-
-// +load 方法会在类加载时自动调用，且只会调用一次
-+ (void)load {
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        
-        // 拿到 UIViewController 类
-        Class class = [self class];
-
-        // 1. 获取原始方法
-        SEL originalSelector = @selector(viewWillAppear:);
-        Method originalMethod = class_getInstanceMethod(class, originalSelector);
-
-        // 2. 获取我们自己实现的方法
-        SEL swizzledSelector = @selector(my_viewWillAppear:);
-        Method swizzledMethod = class_getInstanceMethod(class, swizzledSelector);
-
-        // 3. 交换！
-        // 这一步是核心，直接交换两个方法的 IMP
-        method_exchangeImplementations(originalMethod, swizzledMethod);
-    });
-}
-
-// 4. 我们自己的方法实现
-- (void)my_viewWillAppear:(BOOL)animated {
-    // 在这里，加入我们想注入的代码
-    NSLog(@"页面即将出现: %@", NSStringFromClass([self class]));
-
-    // 关键！调用自己，但实际上因为 IMP 已经交换，
-    // 这里调用的是系统原始的 viewWillAppear: 实现
-    [self my_viewWillAppear:animated];
-}
-
-@end
-```
-
-**代码讲解：**
-
-1.  **`+load` 和 `dispatch_once`**：`+load`保证了交换操作在程序启动时就完成。`dispatch_once` 是一个额外的保险，确保即使在复杂的环境下，交换代码也绝对只执行一次。
-2.  **获取 `Method`**：使用 `class_getInstanceMethod` 来获取类中特定 `SEL` 对应的 `Method` 对象。这个对象里包含了 IMP 的信息。
-3.  **`method_exchangeImplementations`**：这是 Runtime 提供的一个最直接的交换函数。它接收两个 `Method` 对象，然后把它们的 IMP 互相替换掉。简单粗暴，非常有效。
-4.  **实现自定义方法**：我们的 `my_viewWillAppear:` 方法是新的入口。
-    *   第一行，执行我们自己的逻辑（打印日志）。
-    *   第二行，`[self my_viewWillAppear:animated]`，**这是最容易让人困惑的地方！** 你可能会想，这不是在调用自己，导致无限循环吗？
-        *   **绝对不会！** 因为在 `+load` 里，`my_viewWillAppear:` 这个 `SEL` 指向的 `IMP` 已经被换成了系统**原始**的 `viewWillAppear:` 的实现。所以这里虽然方法名叫 `my_viewWillAppear:`，但它执行的却是系统原始的功能。
-
-现在，你项目里任何一个 `UIViewController`（或其子类）在即将显示时，控制台都会自动打印出一条日志，而你没有动过任何业务代码！
-
-### 2. 能做什么（常见功能）
-
-- **消息机制**：调用方法实际上是给对象发送消息。
-- **动态特性**：
-  - 动态添加方法（`class_addMethod`）。
-  - 方法交换（Method Swizzling）。
-  - 动态解析未实现的方法。
-- **KVC/KVO**：底层依赖 runtime 实现。
-
-## kvo和kvc
-
-### KVO 原理深入解析：动态子类与 isa-swizzling
-
-KVO（Key-Value Observing），即键值观察，是 Objective-C 中一种强大的设计模式，允许一个对象监听另一个对象特定属性的变更。其实现核心依赖于 Objective-C 的动态特性，特别是 `isa-swizzling` 和动态子类创建。
-
-#### KVO 的核心实现原理
-
-当您为一个对象的属性首次添加观察者时，系统会在运行时执行一系列操作，从而实现 KVO：
-
-1.  **动态创建子类**：系统会动态地创建一个被观察对象所属类的一个子类。这个新的子类名通常以 `NSKVONotifying_` 作为前缀，例如，如果您观察 `Person` 类的对象，系统会创建一个名为 `NSKVONotifying_Person` 的新类。
-2.  **`isa` 指针交换（isa-swizzling）**：被观察对象的 `isa` 指针，原本指向其原始类（如 `Person`），现在会被修改为指向新创建的动态子类 (`NSKVONotifying_Person`)。这个过程被称为 `isa-swizzling`。因此，尽管开发者在代码中看到的仍然是原始类的实例，但其在运行时的实际类型已经变为动态生成的子类。
-3.  **重写属性的 setter 方法**：动态创建的子类会重写被观察属性的 `setter` 方法。例如，如果您观察 `age` 属性，`setAge:` 方法就会被重写。在这个重写的方法中，系统会执行以下操作：
-    *   在调用原始的 `setter` 方法之前，先调用 `willChangeValueForKey:` 方法，通知系统该属性即将发生变化。
-    *   调用父类（即原始类）的 `setter` 方法，实际地改变属性值。
-    *   在调用原始的 `setter` 方法之后，再调用 `didChangeValueForKey:` 方法，通知系统该属性已经发生变化。
-4.  **触发观察者方法**：`didChangeValueForKey:` 方法的内部实现会负责调用观察者的 `observeValueForKeyPath:ofObject:change:context:` 方法，从而将属性变更的通知传递给观察者。
-
-**KVC 原理**
-
-KVC（Key-Value Coding），即键值编码，是 Objective-C 提供的一种机制，允许开发者通过字符串（键）来间接访问对象的属性，而无需调用明确的存取方法（getter/setter）。这种动态的访问能力是构建在 Objective-C 的运行时特性之上的。
-
-KVC 的核心在于其遵循一套明确的查找规则来定位并操作对象的属性。这套规则主要体现在 `valueForKey:` (获取值) 和 `setValue:forKey:` (设置值) 这两个核心方法中。
-
-#### `setValue:forKey:` 的工作原理
-
-当你调用一个对象的 `setValue:forKey:` 方法时，KVC 会按照以下顺序进行查找并尝试设置属性值：
-
-1.  **查找存取方法 (Setter)**：首先，KVC 会在目标对象中查找一个名为 `set<Key>:` 的方法（其中 `<Key>` 是键名，首字母大写）。如果找到了这个方法，KVC 会调用它并将传入的值作为参数，完成设置。例如，对于 `[person setValue:@30 forKey:@"age"]`，系统会查找 `setAge:` 方法。
-
-2.  **查找下划线前缀的存取方法**：如果第一步没有找到 `set<Key>:` 方法，KVC 会继续查找一个名为 `_set<Key>:` 的方法。如果找到，便会调用该方法。
-
-3.  **检查 `accessInstanceVariablesDirectly`**：如果以上两种 setter 方法都没有找到，KVC 会调用类的 `accessInstanceVariablesDirectly` 类方法。这是一个可以被重写的类方法，用于控制 KVC 是否应该直接访问实例变量。如果该方法返回 `NO`，则 KVC 的查找过程会停止，并抛出一个 `NSUnknownKeyException` 异常。
-
-4.  **直接访问实例变量**：如果 `accessInstanceVariablesDirectly` 返回 `YES` (这是默认行为)，KVC 会按照以下顺序查找与键名匹配的实例变量：
-    *   `_<key>` (例如 `_age`)
-    *   `_is<Key>` (例如 `_isRetired`)
-    *   `<key>` (例如 `age`)
-    *   `is<Key>` (例如 `isRetired`)
-    一旦找到匹配的实例变量，KVC 就会直接为其赋值。
-
-5.  **抛出异常**：如果经过以上所有步骤仍然没有找到任何可以设置的方式，系统会调用 `setValue:forUndefinedKey:` 方法。该方法的默认实现会抛出 `NSUnknownKeyException` 异常，但你可以重写这个方法来自定义错误处理逻辑。
-
-#### `valueForKey:` 的工作原理
-
-当你调用 `valueForKey:` 来获取属性值时，其查找顺序与设置值类似，但专注于获取：
-
-1.  **查找取值方法 (Getter)**：KVC 会按照以下顺序查找取值方法：
-    *   `get<Key>`
-    *   `<key>`
-    *   `is<Key>`
-    只要找到其中任何一个，KVC 就会调用该方法并返回结果。
-2.  **检查 `accessInstanceVariablesDirectly`**：同样地，如果前面几步都没有成功，KVC 会检查 `accessInstanceVariablesDirectly` 的返回值。如果为 `NO`，则查找停止并抛出异常。
-3.  **直接访问实例变量**：如果 `accessInstanceVariablesDirectly` 返回 `YES`，KVC 会按照 `_<key>`、`_is<Key>`、`<key>`、`is<Key>` 的顺序查找实例变量，并直接返回其值。
-5.  **抛出异常**：如果所有查找都失败了，系统会调用 `valueForUndefinedKey:` 方法，其默认实现同样是抛出 `NSUnknownKeyException` 异常。
-
-#### KVC 的应用场景
-
-*   **动态绑定**：允许你在运行时根据字符串来决定访问哪个属性，这在编写通用框架或动态界面时非常有用。
-*   **简化代码**：可以用来操作集合，例如 `[transactions valueForKeyPath:@"payee.name"]` 可以获取一个数组中所有 `transaction` 对象的 `payee` 对象的 `name` 属性，形成一个新的数组。
-*   **KVO 的基础**：KVO 严重依赖 KVC。当你通过 KVC 兼容的方式（即调用 setter 或 `setValue:forKey:`）修改属性值时，才能触发 KVO 通知。
-
-## instance对象、类对象、元对象、isa指针
-
-好的，这是一个非常深入且核心的 Objective-C 问题。我们来详细拆解一下 Objective-C 对象、它的类（Class）以及它们在内存中的分布。
-
-为了更好地理解，我们把它分为三个部分：
-1.  **实例对象 (Instance) 在内存中是什么样的？** (我们平时 `alloc init` 出来的东西)
-2.  **类对象 (Class) 里面有什么？** (实例对象的 `isa` 指向的东西)
-3.  **元类对象 (Metaclass) 是什么？** (类对象的 `isa` 指向的东西)
-
----
-
-### Part 1: 实例对象 (Instance Object) 的内存布局
-
-当我们写下如下代码时：
-
-```objc
-// 定义一个 Person 类
-@interface Person : NSObject
-{
-    NSString *_name; // 实例变量
-    int _age;        // 实例变量
-}
-@end
-
-// 创建一个实例
-Person *person = [[Person alloc] init];
-```
-
-这个 `person` 对象在内存中的结构非常简单，它基本上就是：
-
-1.  **一个 `isa` 指针**
-2.  **所有成员变量（的值**
-
-### Part 2: 类对象  的内部结构
-
-`isa` 指针指向的是一个**类对象**。在 Objective-C 中，**类本身也是一个对象**。`Person` 这个类，在内存中也存在一个唯一的、类型为 `Class` 的对象。
-
-这个类对象存储了描述一个类的所有“元信息”，也就是“蓝图”信息。它主要包含以下内容：
-
-1.  **`isa` 指针**: 是的，类对象自己也有一个 `isa` 指针。它指向这个类的**元类（Metaclass）**。
-2.  **`superclass` 指针**: 指向其父类的**类对象**。例如，`Person` 的 `superclass` 指针就指向 `NSObject` 的类对象。这个指针构成了继承链。
-3.  **方法缓存 **: 一个为了性能优化的缓存。当一个方法被调用后，其指针和选择器（selector）会被缓存到这里，下次再调用同一个方法时，运行时可以直接从缓存中查找，速度极快。
-4.  **类信息 **: 这是一个包含了几乎所有核心信息的复杂结构。通过它可以访问到一个 `class_ro_t` (Read-Only) 的结构体，里面存储了类的“只读”信息，包括：
-    *   **实例变量列表 (`ivar_list_t`)**: 描述了这个类的所有成员变量的名称、类型、内存偏移量等。
-    *   **实例方法列表 (`method_list_t`)**: **这是最重要的部分**，它存储了这个类的所有**实例方法**（减号 `-` 方法）的实现（IMP）、选择器（SEL）和类型编码。
-    *   **属性列表 (`property_list_t`)**: `@property` 声明的属性信息。
-    *   **协议列表 (`protocol_list_t`)**: 这个类遵守的所有协议。
-
-
-
-### Part 3: 元类对象 (Metaclass Object)
-
-我们已经知道，类对象也有一个 `isa` 指针，那它指向哪里呢？答案是**元类对象 (Metaclass)**。
-
-**为什么需要元类？**
-
-Objective-C 的设计哲学是“一切皆对象”，消息发送是其核心机制。我们调用实例方法是向实例对象发送消息，例如 `[person instanceMethod]`。
-
-那么，当我们调用一个**类方法**（加号 `+` 方法）时，例如 `[Person aClassMethod]`，消息是发送给谁的呢？答案是发送给**类对象**。
-
-既然类对象也要能响应消息（调用方法），那么它也必须符合对象的定义，即它也需要有一个“类”来描述它自己，这个“类”就是**元类**。
-
-**元类的核心作用**：
-*   **存储类方法**：元类对象的结构和类对象非常相似，但它的方法列表里存储的是**类方法**（`+` 方法）的定义。
-
-所以，整个关系链是：
-
-1.  **实例对象**的 `isa` 指向其**类对象**。
-2.  **类对象**的 `isa` 指向其**元类对象**。
-3.  **元类对象**的 `isa` 指向根元类（通常是 `NSObject` 的元类）。
-4.  根元类的 `isa` 最终指向它自己，形成一个闭环。
-
-*   **`isa` 链 (纵向)**: `实例` -> `类` -> `元类` -> `根元类`。这条链用于**消息发送**时查找方法的实现。调用实例方法时，从“类”开始找；调用类方法时，从“元类”开始找。
-*   **`superclass` 链 (横向)**: `子类` -> `父类` -> `NSObject` -> `nil`。这条链用于**继承**。当在本类的方法列表中找不到方法时，会沿着这条链向上查找。
-
-*   *   
-    
-
-### 总结与示例
-
-```objc
-NSString *globalString; // 未初始化，存放在 BSS 段
-
-NSString *initializedGlobalString = @"Global"; // 已初始化，存放在数据段
-
-- (void)memoryExample {
-    // 'a' 是局部变量，存放在栈区
-    int a = 10;
-
-    // 'str' 这个指针本身存放在栈区
-    // @"Hello" 这个字符串常量存放在常量区
-    // str 指向常量区
-    NSString *str = @"Hello";
-
-    // 'array' 这个指针存放在栈区
-    // [[NSMutableArray alloc] init] 创建的 NSMutableArray 对象实体存放在堆区
-    // array 指向堆区
-    NSMutableArray *array = [[NSMutableArray alloc] init];
-
-    // 'staticVar' 是静态局部变量，存放在数据段 (因为它被初始化了)
-    static int staticVar = 100;
-    
-    // ... 当方法执行结束时 ...
-    // 'a', 'str', 'array' 这三个栈上的指针被销毁
-    // 'array' 指向的堆上对象因为没有其他强引用，其引用计数变为0，被ARC回收
-}
-```
 
 ## 一个class不想他的某个属性被观察怎么办？
 
@@ -6317,8 +6260,6 @@ NSLog(@"Frame after layout: %@", NSStringFromCGRect(myView.frame)); // -> {{93.7
 
 ## 如何使线程保活
 
-
-
 ## 有哪些crash的情况
 
 iOS 中的 Crash 大致可以分为两大类：**Mach 异常（底层内核级异常）** 和 **未被捕获的 NSException（上层应用级异常）**。此外，还有一些非典型的“崩溃”，如被系统强杀。
@@ -6560,21 +6501,6 @@ iOS 中的 Crash 大致可以分为两大类：**Mach 异常（底层内核级�
 *   **兼顾了性能与灵活性**: 核心体验用 Native 保证，业务迭代用 H5 加速。
 *   **降低了开发成本**: 大量非核心业务可以用一套 H5 代码实现。
 *   **实现了动态化运营**: 可以不通过 App 更新，就上线新的活动和功能。
-
-## @dynamic和@synthesize
-
-* `@dynamic` 的作用就是将生成存取方法以及与之相关的实例变量的任务，完全推迟到运行时。并且使用a.x 语法不会报错。
-* @synthesize的作用就是自动生成实现，并且关联到_name变量
-
-```objc
-#import "MyClass.h"
-
-@implementation MyClass
-@synthesize name = _name; // 告诉编译器，生成name属性的存取方法，并关联到_name实例变量
-@end
-```
-
-
 
 ## autolayout实现原理
 
@@ -7192,12 +7118,6 @@ Observer 并不是时刻都在工作，它只对自己感兴趣的“关键时�
 系统内部也利用 Observer 来处理 UI 的更新。当一个事件（如触摸）处理完成后，在 `RunLoop` 即将进入休眠（`BeforeWaiting`）之前，会集中处理所有被标记为“需要重绘”的视图 (`setNeedsDisplay`) 和“需要重新布局”的视图 (`setNeedsLayout`)。这样做可以把一轮事件循环中的所有 UI 变更合并到一次绘制中，提高了性能。
 
 ## 正常的字典有哪些方法
-
-当然，我们来系统地梳理一下苹果官方 `NSDictionary` (以及 `NSMutableDictionary`) 类提供的、用于根据 `key` 来获取 `value` 的标准方法。
-
-了解这些原生方法的行为，能让你更深刻地理解为什么项目中需要封装 `blp_...` 这样的安全方法。
-
----
 
 ### `NSDictionary` (不可变字典) 的核心取值方法
 
@@ -8117,29 +8037,47 @@ int main() {
 
 ### ***Java抽象类和接口的区别
 
-* 单继承和多继承
-* 可以有普通变量和 `static` 变量，接口只能有 `public static final` 变量
-* 可以有**普通方法**和**抽象方法**，Java 8+ 可以有 `default` 方法和 `static` 方法，其他方法都是**抽象的**，default方法子类可以直接用或者重写
-* 适用于**有相同属性或部分实现**的类，适用于**定义行为规范**
+好的，Java 中的**抽象类（Abstract Class）**和**接口（Interface）**是实现抽象和多态性的核心机制，但它们在设计目的、结构和使用上有很大的区别。
 
-### ***抽象类和普通类区别？
+| 特性           | 抽象类（Abstract Class）                                     | 接口（Interface）                                            |
+| -------------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
+| **定义关键字** | `abstract class`                                             | `interface`                                                  |
+| **方法类型**   | 可以有**抽象方法**（无方法体）和**普通方法**（有方法体，包含实现细节）。 | 在 Java 8 之前，只能有抽象方法。**Java 8 之后**可以有 `default`（默认）方法和 `static`（静态）方法实现。 |
+| **成员变量**   | 可以有各种类型的变量，如 `public`, `protected`, `private`，以及静态变量。 | 只能有 `public static final` 类型的常量。                    |
+| **继承/实现**  | **继承**：一个类只能**继承**一个抽象类（单继承）。           | **实现**：一个类可以**实现**多个接口（多实现）。             |
+| **设计目的**   | 主要用于**代码复用**，并定义一个“是什么”（is-a）的**通用模板**。用于对同一类事物进行**部分抽象**。 | 主要用于**定义行为规范**，定义一个“能做什么”（can-do）的能力集合。用于**完全抽象**。 |
 
-* 抽象类可以有抽象方法和普通方法，接口只能有默认方法，抽象方法，静态方法
-* 抽象类是单继承，接口多继承，抽象类可以用来代码复用，接口主要是定义接口规范
+### ***==和equals的区别
 
-### ***==和equals
+* == 用来比较内存地址或者基本数据类型
+* equals在标准类库（比如Integer 和 String都重写了）是比较对象的内容，但是自定义类的equals就和==是一样的，除非你手动重写
 
 ### ***如何理解 Java 的跨平台性
 
 ### ***三大特性
 
-对于 `String` 类型，`==` 运算符比较的是两个 `String` 对象的引用地址是否相同，也就是判断它们是否是内存中的同一个对象实例。而 `equals()` 方法（`String` 类重写了 `Object` 类的 `equals()` 方法）比较的是两个 `String` 对象的字符序列是否完全相同，即它们的内容是否相等。
+* 封装：主要就是给属性的封装，只提供setter和getter，无法直接访问到。保证数据的健壮性
+
+* 继承：代码复用，声明一种层次关系
+* 多态：解耦合，父类的指针可以更换子类的实现，这样新增或者更换一个子类的时候就很方便，无需修改代码；再比如说一个集合中需要放多个子类，在泛型中写上父类就可以。
+
+### ***四大引用
 
 ### ***重写equals为什么要重写hashcode？
 
-JDK的约定就是如果 `equals` 方法返回 `true`，则 `hashCode` 必须相等。不重写会出现hashset存入异常，两个equals的类，会被存到两个位置，没有去重。本身就不合逻辑
+equals为真的对象，逻辑上就认为是一个对象，如果不重写hashcode，就会出现你往set里存两个一样的对象，却分布在两个hash桶上。那么hashset就没有去重的功能了。
 
-### throw和throws的区别
+### ***重载和重写的区别
+
+### ***Java泛型的原理
+
+泛型的原理就是在编译期检查你声明的泛型是不是正确的，然后在编译的过程中其实你写的那些类型都会被擦除，转化成object类型，也就是说字节码中是不知道具体是什么类型的，安全性由编译器来保证
+
+### ***设计原则
+
+### ***Java为什么要有Integer？
+
+### ***throw和throws的区别
 
 * **throw:**用在**方法体内部**，用来**显式地抛出一个异常对象**。
 * **throws :**声明一个方法可能抛出的异常类型，告知调用者需要处理这些异常,调用这个方法的时候idea会强制要求你try catch包住 。
@@ -8147,10 +8085,6 @@ JDK的约定就是如果 `equals` 方法返回 `true`，则 `hashCode` 必须相
 ### Object类有哪些方法？
 
 `equals(),hashcode(),toString,getClass(),clone(),wait(),notify()`
-
-### ***Java为什么要有Integer？
-
-### *说一下 integer的缓存
 
 ### *？泛型为什么只能存对象
 
@@ -8173,40 +8107,7 @@ class Box {
 
 ```
 
-### **怎么理解面向对象？简单说说封装继承多态
-
-**继承** 
-
-* **代码复用**
-* **可维护性 :** 当需要修改或修复父类中的某个通用功能时，只需修改父类代码即可。
-* **可扩展性 (Extensibility):** 可以基于现有的父类轻松创建新的子类，添加或修改特定的功能。
-
-**多态:**多态允许你使用父类或接口类型的引用来指向子类或实现类的对象
-
-* 接口规范
-* 多态使得代码不依赖于具体的子类实现，而是依赖于抽象的父类或接口。
-
-* **方法重写（Override）**：子类重写父类的方法，实现不同的功能。
-
-* **方法重载（Overload）**：同一类中的方法名称相同，但参数不同。
-
-**为什么需要多态？**
-
-- **提高代码的扩展性**：可以在不修改原代码的情况下，添加新的行为。
-- **让代码更加灵活**：父类引用可以指向不同的子类对象，代码复用性强。
-
-###  ***?面向对象的设计原则
-
-**依赖倒置原则**:简单来说，就是 要依赖抽象（接口），而不是具体的实现类
-**开放封闭原则**：**可以扩展功能（Open for extension）** ，✅**但不能修改已有代码（Closed for modification）** ❌。
-
-**单一职责原则**：即一个类应该只负责一项职责
-
-比如说某个类的方法依赖其他类的方法，最好在这个类中只定义类的接口就行，实际用的时候再传，而不是定义的时候就写死了某个实例。
-
-### *什么是泛型？
-
-### **java创建对象有哪些方式
+### java创建对象有哪些方式
 
 * 反射创建对象
 
@@ -8215,9 +8116,7 @@ class Box {
     MyClass obj = (MyClass) clazz.newInstance();
 ```
 
-
-
-### **反射在你平时写代码应用场景有哪些?
+### 反射在你平时写代码应用场景有哪些?
 
 ###  Java 8 你知道有什么新特性？
 
@@ -8265,17 +8164,42 @@ class Box {
 
 **CopyOnWriteArrayList**、**TreeSet**（自动排序的集合）、**LinkedHashMap**（保留了元素插入的顺序）、**PriorityQueue**（根据元素的优先级来获取元素）
 
-###  ***Arraylist和LinkedList的区别？
+###  ***Arraylist和LinkedList的区别？Arraylist扩容
 
-### ***HashMap的原理
+| 特性               | ArrayList                     | LinkedList                                                 |
+| ------------------ | ----------------------------- | ---------------------------------------------------------- |
+| **底层数据结构**   | **动态数组（Dynamic Array）** | **双向链表（Doubly Linked List）**                         |
+| **随机访问 (Get)** | **快**（O(1)）                | **慢**（O(n)）                                             |
+| **中间插入/删除**  | **慢**（O(n)）                | **快**（O(1)）                                             |
+| **尾部添加/删除**  | **快**（ O(1)）               | **快**（O(1)）                                             |
+| **内存开销**       | 较低（只需要存储数据本身）    | 较高（每个节点都需要额外的空间存储**前驱**和**后继**指针） |
+| **线程安全**       | 均非线程安全                  | 均非线程安全                                               |
 
-### 为什么ArrayList不是线程安全的？
+* 初始容量为10，满了才扩容，扩容1.5倍，相当于开辟一个新数组，把内容复制过去
 
-### 为什么HashMap要用红黑树而不是平衡二叉树？
+### ***CopyOnWriteArrayList原理
 
-### HashMap的扩容机制
+* 写的时候会给原来的数组创建一个新的副本去修改，给写方法加锁，不允许多个线程同时写。读的时候永远是读的旧数组，允许并发读操作，写操作完毕之后会将指针指向新数组。
 
-### 列举HashMap在多线程出现的问题？
+### ***HashMap的原理，扩容，红黑树的细节，时间复杂度
+
+数组+链表or红黑树
+
+* 对象取hash然后取余size，如果出现hash冲突则在链表尾部加上该元素
+* 链表长度超过8扩容成红黑树
+* 负载因子0.75  如果超过0.75 扩容2倍
+
+### ***为什么ArrayList不是线程安全的？
+
+因为没有锁机制
+
+### ***为什么HashMap要用红黑树而不是平衡二叉树？
+
+因为avl要求平衡性太高，插入和删除需要多次旋转，性能低。
+
+### ***列举HashMap在多线程出现的问题？
+
+### ***concurrenthashmap的线程安全原理
 
 ###  如何对map进行快速遍历？
 
@@ -8395,7 +8319,7 @@ Java 的 `java.util.concurrent.atomic` 包下的所有原子类（如 **`AtomicI
 
 - 线程之间形成资源**环形依赖**（A 等 B，B 等 A）
 
-### ***voliatle关键字有什么作用？
+### ***voliatle关键字有什么作用，及其实现  
 
 ### ***synchronized和reentrantlock及其应用场景有什么区别？
 
@@ -8414,6 +8338,15 @@ Java 的 `java.util.concurrent.atomic` 包下的所有原子类（如 **`AtomicI
 * 当锁竞争激烈时，轻量级锁会升级为 **重量级锁**，此时 `Mark Word` 会记录指向 **Monitor** 对象的地址。**Monitor** 中包含一个 **owner**，它表示当前持有锁的线程，同时还有一个 **阻塞队列**，用于存储那些尝试获取锁但被阻塞的线程。解锁时，持有锁的线程会释放锁并唤醒阻塞队列中的线程，允许它们去竞争锁。
 
 ### ***sleep 和 wait的区别是什么？
+
+### `sleep()` 与 `wait()` 的区别
+
+| 特性         | `Thread.sleep(long millis)`                                | `Object.wait()`                                              |
+| ------------ | ---------------------------------------------------------- | ------------------------------------------------------------ |
+| **定义类**   | **`Thread`** 类（静态方法）                                | **`Object`** 类（实例方法）                                  |
+| **释放锁**   | **不释放** 对象锁。线程进入休眠状态时，它仍持有该锁。      | **释放** 对象锁。线程将释放对当前对象的锁，进入等待池。      |
+| **使用环境** | 可以在 **任何地方** 调用。                                 | 只能在 **同步代码块或同步方法** 内部调用（必须先获得对象的锁）。 |
+| **唤醒方式** | **时间驱动**：休眠时间到达后自动醒来，重新进入可运行状态。 | **事件驱动**：必须被其他线程通过调用同一对象的 `notify()` 或 `notifyAll()` 方法唤醒，或等待时间超时。 |
 
 ### StringBuffer怎么实现线程安全的
 
@@ -8512,7 +8445,13 @@ volatile + CAS 或者 synchronized 实现
 
 ### ***四大引用
 
-### ***jdk 、jre、 jvm 关系及用途 
+### ***jdk 、jre、 jvm 关系及用途
+
+- JVM是Java虚拟机，是Java程序运行的环境。它负责将Java字节码（由Java编译器生成）解释或编译成机器码，并执行程序。JVM提供了内存管理、垃圾回收、安全性等功能，使得Java程序具备跨平台性。
+- JDK是Java开发工具包，是开发Java程序所需的工具集合。它包含了JVM、编译器（javac）、调试器（jdb）等开发工具，以及一系列的类库（如Java标准库和开发工具库）。JDK提供了开发、编译、调试和运行Java程序所需的全部工具和环境。
+- JRE是Java运行时环境，是Java程序运行所需的最小环境。它包含了JVM和一组Java类库，用于支持Java程序的执行。JRE不包含开发工具，只提供Java程序运行所需的运行环境。
+
+### [#](https://xiaolincoding.com/interview/java.html#为什么java解释和编译都有)为什么Java解释和编译都有？ 
 
 ### ***类载入过程 JVM 会做什么？
 
@@ -8541,6 +8480,8 @@ volatile + CAS 或者 synchronized 实现
 
 **本地内存**
 
+### *** 如何避免full gc
+
 ### ***JVM了解吗？
 
 它的主要作用包括：
@@ -8568,9 +8509,9 @@ volatile + CAS 或者 synchronized 实现
 
 ### ***java垃圾回收
 
-### 程序计数器的作用
+### ***程序计数器的作用
 
-### 对象创建的过程了解吗
+### ***对象创建的过程了解吗
 
 * **类加载检查**：JVM 会先检查对应的类是否已经被加载、解析和初始化过
 * **内存的分配**：指针碰撞： 适用于规整的堆内存，通过移动指针划分已用和空闲区域。空闲列表：适用于碎片化的堆内存，维护可用内存块列表并从中分配。
@@ -8591,7 +8532,7 @@ volatile + CAS 或者 synchronized 实现
 * **过多动态生成的类**（如**大量代理类、反射**，这是因为**动态生成的类都存在元空间**）
 * **应用依赖的第三方库过多**
 
-### StackOverflowError 
+**StackOverflowError** 
 
 * **递归深度过深**，导致 **栈帧爆满**
 
@@ -8619,6 +8560,8 @@ volatile + CAS 或者 synchronized 实现
 * StringIndexOutOfBoundsException
 * ArithmeticException 除0异常
 * ClassCastException 类型转换异
+
+
 
 ### 运行时常量池，字符串常量池，常量池之间的关系
 
