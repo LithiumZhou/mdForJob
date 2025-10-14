@@ -375,20 +375,10 @@ MVVM 的核心是引入了一个新的角色：`ViewModel`。它的任务是**�
 
 在 Apple 平台的传统 MVC 模式中，对象之间的关系通常是**单向强持有**和**双向弱引用**的结合。
 
-| 对象                    | 持有谁？              | 被谁持有？                                                   | 关系类型 | 说明                                                         |
-| ----------------------- | --------------------- | ------------------------------------------------------------ | -------- | ------------------------------------------------------------ |
-| **VC (ViewController)** | **View** (强持有)     | **Navigation Controller** (强持有), **Tab Bar Controller** (强持有), **父 VC** (强持有) | **强**   | VC 是 View 的“拥有者”，生命周期与 View 紧密关联。            |
-| **View**                | **Subviews** (强持有) | **VC** (强持有)                                              | **强**   | View 通常不持有任何其他对象，其生命周期由其父 View 或 VC 控制。 |
-| **Model**               | (不持有其他架构对象)  | **VC** (强持有) 或 **其他服务层** (强持有)                   | **强**   | Model 是数据对象，由 VC 或数据管理者持有。                   |
-| **VC**                  | **Model** (强持有)    | **Model** (无，或弱引用 `delegate`)                          | **强**   | VC 通常强持有它需要展示的数据 Model。                        |
-| **Model**               | **VC**                | VC (弱引用 `delegate`)                                       | **弱**   | 如果 Model 需要通知 VC 数据变化，会通过 `delegate` 模式，通常是**弱引用**，以避免循环引用。 |
-
 ### MVC 总结
 
 - **VC ↔ View：** VC 强持有 View（UIKit/AppKit 自动设置），View 不持有 VC。
 - **VC ↔ Model：** VC 强持有 Model。Model 如果需要反向通信，则对 VC 采用**弱引用 (`weak`) 的 Delegate**。
-
-### MVVM (Model-View-ViewModel) 中的持有关系
 
 ### MVVM 总结
 
@@ -1952,10 +1942,6 @@ KVC 是通过 **Objective-C Runtime** 来实现的动态查找与赋值。
 
 ## instance对象、类对象、元对象、isa指针
 
-好的，这是一个非常深入且核心的 Objective-C 问题。我们来详细拆解一下 Objective-C 对象、它的类（Class）以及它们在内存中的分布。
-
-为了更好地理解，我们把它分为三个部分：
-
 1.  **实例对象 (Instance) 在内存中是什么样的？** (我们平时 `alloc init` 出来的东西)
 2.  **类对象 (Class) 里面有什么？** (实例对象的 `isa` 指向的东西)
 3.  **元类对象 (Metaclass) 是什么？** (类对象的 `isa` 指向的东西)
@@ -1982,7 +1968,7 @@ Person *person = [[Person alloc] init];
 这个 `person` 对象在内存中的结构非常简单，它基本上就是：
 
 1.  **一个 `isa` 指针**
-2.  **所有成员变量（的值**
+2.  **所有成员变量的值**
 
 ### Part 2: 类对象  的内部结构
 
@@ -2024,40 +2010,11 @@ Objective-C 的设计哲学是“一切皆对象”，消息发送是其核心�
 3.  **元类对象**的 `isa` 指向根元类（通常是 `NSObject` 的元类）。
 4.  根元类的 `isa` 最终指向它自己，形成一个闭环。
 
-*   **`isa` 链 (纵向)**: `实例` -> `类` -> `元类` -> `根元类`。这条链用于**消息发送**时查找方法的实现。调用实例方法时，从“类”开始找；调用类方法时，从“元类”开始找。
-*   **`superclass` 链 (横向)**: `子类` -> `父类` -> `NSObject` -> `nil`。这条链用于**继承**。当在本类的方法列表中找不到方法时，会沿着这条链向上查找。
+* **`isa` 链 (纵向)**: `实例` -> `类` -> `元类` -> `根元类`。这条链用于**消息发送**时查找方法的实现。调用实例方法时，从“类”开始找；调用类方法时，从“元类”开始找。
 
-*   *   
+* **`superclass` 链 (横向)**: `子类` -> `父类` -> `NSObject` -> `nil`。这条链用于**继承**。当在本类的方法列表中找不到方法时，会沿着这条链向上查找。
 
-### 总结与示例
-
-```objc
-NSString *globalString; // 未初始化，存放在 BSS 段
-
-NSString *initializedGlobalString = @"Global"; // 已初始化，存放在数据段
-
-- (void)memoryExample {
-    // 'a' 是局部变量，存放在栈区
-    int a = 10;
-
-    // 'str' 这个指针本身存放在栈区
-    // @"Hello" 这个字符串常量存放在常量区
-    // str 指向常量区
-    NSString *str = @"Hello";
-
-    // 'array' 这个指针存放在栈区
-    // [[NSMutableArray alloc] init] 创建的 NSMutableArray 对象实体存放在堆区
-    // array 指向堆区
-    NSMutableArray *array = [[NSMutableArray alloc] init];
-
-    // 'staticVar' 是静态局部变量，存放在数据段 (因为它被初始化了)
-    static int staticVar = 100;
-    
-    // ... 当方法执行结束时 ...
-    // 'a', 'str', 'array' 这三个栈上的指针被销毁
-    // 'array' 指向的堆上对象因为没有其他强引用，其引用计数变为0，被ARC回收
-}
-```
+  
 
 ## 如何扩大一个button的响应范围
 
@@ -3311,13 +3268,12 @@ dispatch_async(queue, ^{    // 异步执行 + 串行队列
 
 ### 二、核心功能与特性对比
 
-| 功能点              | GCD                                                          | NSOperation / NSOperationQueue                               |
-| :------------------ | :----------------------------------------------------------- | :----------------------------------------------------------- |
-| **1. 依赖关系**     | **不支持**。你无法简单地声明“任务 C 必须在任务 A 和 B 完成后执行”。虽然可以通过 `dispatch_group` 或 `dispatch_barrier` 间接模拟，但比较繁琐。 | **原生支持，非常强大**。这是 `NSOperation` 的**杀手级特性**。<br> `[operationC addDependency:operationA];`<br> `[operationC addDependency:operationB];`<br> 这样可以轻松构建复杂的任务执行图。 |
-| **2. 状态控制**     | **不支持**。任务一旦提交到队列，你就无法中途控制它。它会一直执行直到完成。你不能暂停、恢复或取消一个已经提交的 Block。 | **原生支持**。`NSOperation` 是一个状态机，有 `isReady`, `isExecuting`, `isFinished`, `isCancelled` 等状态。<br> - `[operation cancel]`：可以取消一个**尚未开始**或**正在执行中**的操作（需要你在操作内部检查 `isCancelled` 状态）。<br> - `[queue setSuspended:YES]`：可以**暂停**整个队列，所有未开始的任务都会被挂起。<br> - `[queue setSuspended:NO]`：可以**恢复**队列。 |
-| **3. 最大并发数**   | **不支持直接设置**。并发队列的并发数由系统 GCD 动态管理。虽然可以通过 `DispatchSemaphore` (信号量) 来间接控制并发数量，但这是一种限制手段，而非队列属性。 | **原生支持**。`NSOperationQueue` 有一个 `maxConcurrentOperationCount` 属性，可以非常方便地控制同时执行的操作数量。<br> - `queue.maxConcurrentOperationCount = 1;` // 变成了**串行队列**。<br> - `queue.maxConcurrentOperationCount = 5;` // 最多同时执行 5 个操作。 |
-| **4. 优先级 (KVO)** | **支持**。通过服务质量 (QoS) 来设置。`DISPATCH_QUEUE_PRIORITY_HIGH`, `QOS_CLASS_USER_INITIATED` 等。 | **原生支持**。`NSOperation` 有 `queuePriority` 属性 (`NSOperationQueuePriorityVeryHigh` 等)。更重要的是，你可以通过 **KVO (键值观察)** 来监听 `NSOperation` 的状态变化（如 `isFinished`），这在需要更新 UI 时非常有用。 |
-| **5. 性能**         | **更轻量，性能更高**。由于是更底层的 C API，没有额外的面向对象开销，对于简单的、一次性的后台任务，GCD 是最快的。 | **有面向对象的开销**。创建 `NSOperation` 对象比创建一个 Block 要消耗更多的内存和时间。但对于需要复杂控制的场景，这点开销完全可以忽略不计。 |
+| 功能点            | GCD                                                          | NSOperation / NSOperationQueue                               |
+| :---------------- | :----------------------------------------------------------- | :----------------------------------------------------------- |
+| **1. 依赖关系**   | **不支持**。你无法简单地声明“任务 C 必须在任务 A 和 B 完成后执行”。虽然可以通过 `dispatch_group` 或 `dispatch_barrier` 间接模拟，但比较繁琐。 | **原生支持，非常强大**。这是 `NSOperation` 的**杀手级特性**。<br> `[operationC addDependency:operationA];`<br> `[operationC addDependency:operationB];`<br> 这样可以轻松构建复杂的任务执行图。 |
+| **2. 状态控制**   | **不支持**。任务一旦提交到队列，你就无法中途控制它。它会一直执行直到完成。你不能暂停、恢复或取消一个已经提交的 Block。 | **原生支持**。`NSOperation` 是一个状态机，有 `isReady`, `isExecuting`, `isFinished`, `isCancelled` 等状态。<br> - `[operation cancel]`：可以取消一个**尚未开始**或**正在执行中**的操作（需要你在操作内部检查 `isCancelled` 状态）。<br> - `[queue setSuspended:YES]`：可以**暂停**整个队列，所有未开始的任务都会被挂起。<br> - `[queue setSuspended:NO]`：可以**恢复**队列。 |
+| **3. 最大并发数** | **不支持直接设置**。并发队列的并发数由系统 GCD 动态管理。虽然可以通过 `DispatchSemaphore` (信号量) 来间接控制并发数量，但这是一种限制手段，而非队列属性。 | **原生支持**。`NSOperationQueue` 有一个 `maxConcurrentOperationCount` 属性，可以非常方便地控制同时执行的操作数量。<br> - `queue.maxConcurrentOperationCount = 1;` // 变成了**串行队列**。<br> - `queue.maxConcurrentOperationCount = 5;` // 最多同时执行 5 个操作。 |
+| **5. 性能**       | **更轻量，性能更高**。由于是更底层的 C API，没有额外的面向对象开销，对于简单的、一次性的后台任务，GCD 是最快的。 | **有面向对象的开销**。创建 `NSOperation` 对象比创建一个 Block 要消耗更多的内存和时间。但对于需要复杂控制的场景，这点开销完全可以忽略不计。 |
 
 ---
 
@@ -3346,55 +3302,124 @@ dispatch_async(queue, ^{    // 异步执行 + 串行队列
 
 ## 通知中心的实现原理
 
-```objective-c
-    // a. Observer: 谁来收听 (通常是 self)
-    // b. Selector: 收到广播后，要调用哪个方法来处理 (比如 aMethodToHandleNotification:)
-    // c. Name:     要收听哪个频道 (NSNotificationName)
-    // d. Object:   [可选] 只收听某个特定主持人（发送者）的广播。如果传 nil，就收听这个频道上所有人的广播。
-    [center addObserver:self 
-               selector:@selector(aMethodToHandleNotification:) 
-                   name:@"UserDidLoginNotification" 
-                 object:nil];
-	 // 发通知 
-   [center postNotificationName:@"UserDidLoginNotification" 
-                          object:self 
-                        userInfo:userInfo]; //一个字典
+非常好的问题，这是 iOS 面试中高频考点之一。我们来系统地讲讲：
+
+------
+
+**一、通知中心的使用（`NSNotificationCenter`）**
+
+通知中心是一种**广播机制**（publish-subscribe pattern），用于在应用中**实现不同对象之间的松耦合通信**。
+ 常用于：
+
+- 键盘事件监听
+- 主题、语言切换
+- 登录状态变化通知等
+
+### 📌 使用示例
+
+```objc
+// 1️⃣ 发送通知
+[[NSNotificationCenter defaultCenter] postNotificationName:@"UserDidLoginNotification"
+                                                    object:nil
+                                                  userInfo:@{@"userId": @"123"}];
+
+// 2️⃣ 注册监听者
+[[NSNotificationCenter defaultCenter] addObserver:self
+                                         selector:@selector(handleLogin:)
+                                             name:@"UserDidLoginNotification"
+                                           object:nil];
+
+// 3️⃣ 接收通知
+- (void)handleLogin:(NSNotification *)notification {
+    NSLog(@"收到登录通知: %@", notification.userInfo);
+}
+
+// 4️⃣ 移除监听（必须）
+[[NSNotificationCenter defaultCenter] removeObserver:self];
 ```
 
-**目录一：按“通知名”索引 (最常用)**
+------
 
-*   这是一个字典 (`nameTable`)。
-*   **Key**: `NSNotificationName` (通知名)。
-*   **Value**: **又是一个字典！** 我们称之为 `objectTable`。
+二**、通知中心的原理（`NSNotificationCenter` 实现机制）**
 
-    *   在这个 `objectTable` 字典里：
-        *   **Key**: `object` (发送者实例的指针)。
-        *   **Value**: 一个**数组或链表**。这个列表里存放的才是最终的“订阅者信息”结构体。
-            *   **订阅者信息结构体**：包含 `observer` (监听者) 和 `selector` (响应方法)。
+核心是一个**字典 + 数组结构**，内部维护了一个**观察者列表**。
 
----
+### 1️⃣ 数据结构
 
-### 我们用您的描述，结合这个更精确的模型，来重演一次“发送通知”的过程
+`NSNotificationCenter` 内部大致维护一个这样的结构：
 
-假设我们执行了这行代码：
-`[center postNotificationName:@"UserDidLogin" object:someLoginManager userInfo:nil];`
+```objc
+{
+  "UserDidLoginNotification" : [
+       { observer: A, selector: handleLogin:, object: nil },
+       { observer: B, selector: refreshUI:, object: nil },
+   ],
+  "UserDidLogoutNotification" : [
+       { observer: C, selector: clearData:, object: nil }
+   ]
+}
+```
 
-`NSNotificationCenter` 会执行以下一系列查找和操作：
+- **key**：通知名
+- **value**：观察者数组（每个包含 observer、selector、object）
 
-1.  **第一步：查找“精确匹配”的订阅者**
-    *   `NSNotificationCenter` 首先来到**目录一 (`nameTable`)**。
-    *   它拿着 `Key = "UserDidLogin"`，在这个字典里查找。
-    *   **找到了！** 它得到了一个 `objectTable`。它存的是订阅了UserDidLogin的但是 对实例要求不同的对象，要求同一个实例的作为一个列表存在objectTable中。
-    *   接着，它拿着 `Key = someLoginManager` (发送者实例)，在这个 `objectTable` 里查找。
-    *   **找到了！** 它得到了一个订阅者列表（比如 `listA`）。这个列表里要求的都是someLoginManager这个实例的对象。
-    *   然后，它会**遍历 `listA`**，向里面的每一个 `observer` 调用它对应的 `selector`。
+------
 
-2.  **第二步：查找“频道匹配，不限主持人”的订阅者**
-    *   `NSNotificationCenter` 再次来到**目录一 (`nameTable`)**。
-    *   它还是用 `Key = "UserDidLogin"` 找到了那个 `objectTable`。
-    *   这一次，它在这个 `objectTable` 里查找一个**特殊的 Key：`nil`**（代表不指定发送者）。
-    *   **找到了！** 它得到了另一个订阅者列表（比如 `listB`），这个列表里是所有只关心 "UserDidLogin" 这个频道，不关心是谁发送的订阅者。
-    *   然后，它会**遍历 `listB`**，一一调用他们的方法。
+### 2️⃣ 发送通知时
+
+当执行：
+
+```objc
+postNotificationName:@"UserDidLoginNotification"
+```
+
+时，系统会：
+
+1. 在字典中找到对应通知名的观察者数组；
+2. 遍历所有匹配的 observer；
+3. 在主线程或当前线程中调用对应的 `selector`。
+
+------
+
+### 3️⃣ 线程安全
+
+- `NSNotificationCenter` 本身是**线程安全的**；
+
+- 但通知的回调是在**发送通知的线程中执行**；
+
+  - 如果在子线程发通知，观察者也会在子线程中执行；
+
+  - 想让通知总在主线程执行，可以用：
+
+    ```objc
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:...];
+    });
+    ```
+
+**三、注意事项与内存管理**
+
+1. **一定要移除观察者**
+
+   - iOS 9 以前：不移除会崩溃（野指针）
+   - iOS 9 以后：系统会自动弱引用 observer，不会崩溃，但仍建议在 `dealloc` 中移除，防止意外逻辑触发。
+
+2. **通知回调和 block 的循环引用问题**
+
+   - 如果使用 block 形式监听通知，要用 `weak self`：
+
+     ```objc 
+     __weak typeof(self) weakSelf = self;
+     id token = [[NSNotificationCenter defaultCenter]
+         addObserverForName:@"UserDidLoginNotification"
+         object:nil
+         queue:[NSOperationQueue mainQueue]
+         usingBlock:^(NSNotification *note) {
+             [weakSelf doSomething];
+         }];
+     ```
+
+
 
 ## SEL和imp的原理和使用
 
@@ -3577,17 +3602,7 @@ NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithURL:url
 
 ## 任务A、B、C，怎么让C一定在A、B后发生， A、B顺序无所谓，三个任务并列不嵌套，说出所有方法
 
-好的，这是一个非常经典的并发编程问题，在 Objective-C 中有多种优雅且高效的解决方案。问题核心是**任务依赖**：任务 C 依赖于任务 A 和 B 的完成。
-
-下面我将列出所有在 OC 中实现此需求的常用方法，从最推荐到最不推荐的顺序列出，并附上代码示例和优缺点分析。
-
-### 核心思路
-
-所有方法的共同思路都是建立一个机制，让系统知道 A 和 B 这两个任务已经完成，只有当这个“完成”信号被确认后，才开始执行 C。
-
----
-
-### 方法一：使用 Grand Central Dispatch (GCD) - `DispatchGroup` (最推荐)
+### 方法一：使用  (GCD) - `DispatchGroup` (最推荐)
 
 这是最现代、最灵活、也是最常用的 GCD 解决方案。`DispatchGroup` 就像一个任务计数器，你告诉它要追踪几个任务，每完成一个就减一，当计数器归零时，就执行你指定好的最终任务。
 
@@ -4520,8 +4535,6 @@ static MyManager *instance = nil;
 * 系统会维护一个弱引用的map，key是对象的地址，value是弱引用指针的地址数组，当一个对象被销毁时，会去查这个对象在不在表里，如果在，就遍历value，将弱引用指针全部置为nil。
 * 所以当你用weak指针指向一个对象的时候，系统也会自动的将你这个weak指针加到这个表里。
 
-*   *   
-
 ## 子线程中如何管理对象的生命周期
 
 ## GCD
@@ -4547,8 +4560,6 @@ static MyManager *instance = nil;
         *   `utility`: 需要一些时间，用户不急切等待结果。
         *   `background`: 后台维护性任务，对时间不敏感，优先级最低。
         可以通过 `DispatchQueue.global(qos:)` 或 `dispatch_get_global_queue()` 获取。
-
-
 
 ### Dispatch Queues
 
@@ -4661,84 +4672,6 @@ GCD 提供了几种不同类型的队列：
     *   **特性**：**非阻塞**。调用 `dispatch_group_notify` 会立即返回，当前线程会继续执行下面的代码，不会被卡住。这是它最大的优点。
     *   `queue`: 你希望最终的“收尾任务”在哪个队列上执行。最常见的用法是传入 `dispatch_get_main_queue()`，以便在所有后台任务完成后更新 UI。
     *   `block`: 所有任务完成后要执行的代码。
-
----
-
-**经典应用场景：并发网络请求**
-
-假设你需要从两个不同的服务器 API 获取数据（用户信息和产品列表），并且必须在这两个请求都成功返回后，才能刷新界面。
-
-**使用 Dispatch Group 的完美实现：**
-
-```objectivec
-- (void)fetchAllDataAndRefreshUI {
-    NSLog(@"开始加载所有数据...");
-    
-    // 1. 创建一个任务组
-    dispatch_group_t group = dispatch_group_create();
-    
-    // 2. 创建一个用于执行网络请求的队列
-    dispatch_queue_t concurrentQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
-    
-    __block id userInfo;       // 用于存储请求结果
-    __block NSArray *productList; // 用于存储请求结果
-
-    // --- 任务 A: 获取用户信息 ---
-    // 2.1 手动让任务进组
-    dispatch_group_enter(group); 
-    dispatch_async(concurrentQueue, ^{
-        NSLog(@"开始请求用户信息...");
-        // 模拟网络请求
-        [self fetchFromServer:@"/api/user" completion:^(id result) {
-            NSLog(@"获取用户信息成功!");
-            userInfo = result;
-            // 2.2 任务完成，手动让任务出组
-            dispatch_group_leave(group); 
-        }];
-    });
-
-    // --- 任务 B: 获取产品列表 ---
-    // 3.1 手动让任务进组
-    dispatch_group_enter(group);
-    dispatch_async(concurrentQueue, ^{
-        NSLog(@"开始请求产品列表...");
-        // 模拟网络请求
-        [self fetchFromServer:@"/api/products" completion:^(id result) {
-            NSLog(@"获取产品列表成功!");
-            productList = result;
-            // 3.2 任务完成，手动让任务出组
-            dispatch_group_leave(group);
-        }];
-    });
-
-    NSLog(@"两个请求已发出，主线程继续执行其他事情...");
-
-    // 4. 注册一个通知：当 group 中所有任务都完成后，在主线程执行
-    dispatch_group_notify(group, dispatch_get_main_queue(), ^{
-        NSLog(@"所有网络请求均已完成！");
-        
-        // 在这里，我们可以安全地认为 userInfo 和 productList 都有值了
-        // 可以在主线程刷新 UI
-        [self.nameLabel setText:userInfo[@"name"]];
-        [self.tableView reloadData];
-        
-        NSLog(@"UI 刷新完毕！");
-    });
-}
-
-// 模拟一个网络请求方法
-- (void)fetchFromServer:(NSString *)api completion:(void (^)(id result))completion {
-    // 模拟随机耗时
-    double delay = arc4random_uniform(3) + 1.0; 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        if ([api isEqualToString:@"/api/user"]) {
-            completion(@{@"name": @"张三", @"uid": @"1001"});
-        } else {
-            completion(@[@"iPhone 20", @"MacBook Pro M5"]);
-        }
-    });
-}
-```
 
 ### Dispatch Barrier
 
@@ -5111,17 +5044,6 @@ dispatch_semaphore_t semaphore = dispatch_semaphore_create(5);
     你会发现，日志总是3个任务一组地开始和结束。
 
 ## 引用计数放在内存的哪个地方
-
-这是一个非常深入且极好的问题，它触及了 Objective-C 运行时 (Runtime) 的核心实现。答案比“在某个整数里”要复杂得多，并且随着苹果的优化，其存储方式也一直在演进。
-
-简单来说，一个对象的引用计数**存储在两个主要地方**：
-
-1.  **直接在对象内部（通过 `isa` 指针）**：这是为了速度而优化的“快速路径”(Fast Path)。
-2.  **在一个全局的、独立的“边表” (Side Table) 中**：当对象内部存不下时，使用的“慢速路径”(Slow Path)。
-
-下面我们来详细拆解这个过程。
-
----
 
 ### 背景：对象内存布局
 
@@ -6258,8 +6180,6 @@ NSLog(@"Frame after layout: %@", NSStringFromCGRect(myView.frame)); // -> {{93.7
     }
     ```
 
-## 如何使线程保活
-
 ## 有哪些crash的情况
 
 iOS 中的 Crash 大致可以分为两大类：**Mach 异常（底层内核级异常）** 和 **未被捕获的 NSException（上层应用级异常）**。此外，还有一些非典型的“崩溃”，如被系统强杀。
@@ -6671,10 +6591,10 @@ SOLID 是面向对象设计中五个基本原则的首字母缩写，由罗伯�
 *   **O - 开放/封闭原则 (Open/Closed Principle, OCP)**
     *   **含义**：软件实体（如类、模块、函数等）应该对扩展开放，对修改封闭。
     *   **目的**：允许在不修改现有代码的情况下增加新功能。这通常通过继承和多态，或者使用插件式架构来实现，从而提高了系统的稳定性和灵活性。
-*   **L - 里氏替换原则 (Liskov Substitution Principle, LSP)**
+*   **L - 里氏替换原则 **
     *   **含义**：所有引用基类的地方必须能透明地使用其子类的对象，而程序行为不发生改变。简单来说，子类对象可以替换掉所有父类对象出现的地方，而不会引起任何错误或不符合预期的行为。
     *   **目的**：确保继承体系的正确性。子类不应该重写父类的方法以使其执行完全不同或不兼容的操作，这保证了代码的可靠性和可预测性。
-*   **D - 依赖倒置原则 (Dependency Inversion Principle, DIP)**
+*   **D - 依赖倒置原则 **
     *   **含义**：高层模块不应该依赖于低层模块，两者都应该依赖于抽象。抽象不应该依赖于细节，细节应该依赖于抽象。
     *   **目的**：实现模块间的解耦。通过面向接口编程，而不是面向实现编程，可以轻松地替换底层实现细节，而无需修改高层模块。遵循这些设计原则，可以显著提升软件质量，使软件产品在整个生命周期中都易于管理和演进。
 
@@ -8035,6 +7955,208 @@ int main() {
 
 ### ***单例手写
 
+### ***java反射的作用，底层原理
+
+* **动态调用方法/构造器：** 程序可以在运行时动态地实例化一个类，或者调用一个类的方法，即使这个方法名在编写代码时是未知的。（动态性指，比如可以在运行时通过接口获得一个类名然后实例化）
+* 反射可以绕过 Java 的访问控制限制（`private`），强制访问和修改类的私有字段或调用私有方法。
+
+**原理**
+
+------
+
+**💡 一、先回答你最核心的问题：**
+
+> **是的，类的元信息最初来源于 `.class` 字节码文件**，
+>  但“类的元信息 ≠ 字节码本身”。
+
+也就是说：
+
+- `.class` 文件里**包含了元信息的原始数据**；
+- 但 JVM 运行时会**把这些数据解析、加载进内存**，
+   并构建出真正的“元信息对象结构”——比如 `Class`、`Method`、`Field` 等对象。
+
+------
+
+⚙️ **二、形象理解这三者的关系**
+
+| 名称               | 阶段           | 内容                             | 存在形式               |
+| ------------------ | -------------- | -------------------------------- | ---------------------- |
+| `.class` 文件      | 编译后（磁盘） | 二进制字节码 + 元数据            | 磁盘文件               |
+| 元信息（Metadata） | 运行时（内存） | 类名、字段、方法、继承关系、注解 | JVM 内存结构（元空间） |
+| `Class` 对象       | Java 层接口    | Java 对元信息的访问入口          | Java 堆对象            |
+
+------
+
+**🧩 三、举个例子**
+
+假设我们有一个类：
+
+```java
+public class Person {
+    private String name;
+    public void sayHello() {
+        System.out.println("Hello");
+    }
+}
+```
+
+**🔹 编译后生成 `.class` 文件**
+
+里面是二进制格式，结构大概是：
+
+```
+CAFEBABE （魔数）
+版本号
+常量池（类名、字段名、方法名等）
+访问标志
+父类、接口信息
+字段表（name）
+方法表（sayHello）
+属性表（Code、LineNumberTable 等）
+```
+
+👉 所以字节码文件确实**“携带”了元信息**。
+
+------
+
+**🔹 JVM 加载这个类时**
+
+当执行：
+
+```java
+Class<?> cls = Class.forName("Person");
+```
+
+JVM 会：
+
+1. 读取 `.class` 文件字节流；
+2. 校验并解析常量池；
+3. 生成一个运行时的类结构体（存放在 **方法区 / 元空间 Metaspace**）；
+4. 同时在 Java 堆中创建一个 `Class` 对象；
+   - 这个 `Class` 对象的内部指针指向元空间中的结构。
+
+所以运行时的 `cls` 实际上是：
+
+> 一个代表 “Person 类” 的 Java 对象，
+>  它的底层指针关联到 JVM 内部加载的“Person 的元信息”。
+
+------
+
+**📦 四、再看反射怎么用这些信息**
+
+```java
+Field f = cls.getDeclaredField("name");
+Method m = cls.getMethod("sayHello");
+```
+
+这里的 `getDeclaredField` / `getMethod`：
+
+- 并不是去读 `.class` 文件；
+- 而是去访问 **JVM 已经加载到内存的元信息结构**；
+- 这些信息在类加载阶段已经被解析并驻留在内存中了。
+
+### ***java类加载器，双亲委派的作用
+
+非常好的问题👏！
+ “**双亲委派机制（Parent Delegation Model）**”是理解 **Java 类加载器 ClassLoader** 的核心之一，
+ 也是很多面试中问到的 JVM 基础难点。
+
+我们一步步来，带你从直觉到原理彻底搞懂👇
+
+------
+
+**🧩 一、先说一句话总结**
+
+> **双亲委派机制：**
+>  当一个类加载器要加载某个类时，它不会自己马上去加载，
+>  而是**先委托它的父加载器（Parent）去尝试加载**。
+>  如果父加载器找不到，才会由自己去加载。
+
+------
+
+**⚙️ 二、类加载器的体系结构**
+
+Java 的类加载器是一棵树状结构（虽然不是严格继承关系，但逻辑上是层级关系）：
+
+```
+Bootstrap ClassLoader （启动类加载器，C++ 实现）
+        ↓
+ExtClassLoader （扩展类加载器）
+        ↓
+AppClassLoader （应用类加载器）
+        ↓
+CustomClassLoader （自定义类加载器）
+```
+
+它们分别负责加载不同来源的类：
+
+| 加载器            | 负责加载的内容 | 加载路径                               |
+| ----------------- | -------------- | -------------------------------------- |
+| Bootstrap         | JDK 核心类     | `<JAVA_HOME>/lib`（rt.jar、java.base） |
+| ExtClassLoader    | 扩展类         | `<JAVA_HOME>/lib/ext`                  |
+| AppClassLoader    | 应用类         | classpath 下的类                       |
+| CustomClassLoader | 用户自定义类   | 代码中定义的路径                       |
+
+------
+
+**🔄 三、双亲委派的加载流程**
+
+当你执行：
+
+```java
+Class.forName("java.lang.String");
+```
+
+触发的流程是：
+
+1. AppClassLoader 接到请求 → 它不会马上加载；
+2. 它把请求交给它的父加载器 ExtClassLoader；
+3. ExtClassLoader 也不会加载，继续交给 Bootstrap；
+4. Bootstrap 尝试加载 `java.lang.String`（在 `rt.jar` 里能找到）；
+5. 找到了 → 返回给上层；
+6. 上层加载器们都停止尝试，直接使用父加载器返回的类。
+
+如果 Bootstrap 没找到（比如你写的 `com.example.Test`）：
+
+- 请求会一路往下返回；
+- 直到 AppClassLoader 再自己去加载。
+
+------
+
+**🧠 四、为什么要有双亲委派？**
+
+✅ 1. **安全性（防止核心类被篡改）**
+
+举个例子：
+ 你写了一个类：
+
+```java
+package java.lang;
+public class String {
+    ...
+}
+```
+
+如果没有双亲委派，AppClassLoader 就可能加载这个类。
+ 那程序中所有 `String` 可能就被你自定义的版本“劫持”了！😨
+
+但有了双亲委派：
+
+- 你的类加载器在加载 `java.lang.String` 时，会**先让 Bootstrap** 加载；
+- Bootstrap 能找到真正的 `rt.jar` 中的 String；
+- 所以你伪造的类不会被加载 → 保证了安全性。
+
+------
+
+✅ 2. **避免重复加载**
+
+父类加载器加载过的类，会被所有子加载器复用。
+ 否则，每个 ClassLoader 都各自加载，会造成：
+
+- **同名类冲突**
+- **方法区/元空间内存浪费**
+- **类型判断异常（同名不同类加载器加载 → 被认为是不同类型）**
+
 ### ***Java抽象类和接口的区别
 
 好的，Java 中的**抽象类（Abstract Class）**和**接口（Interface）**是实现抽象和多态性的核心机制，但它们在设计目的、结构和使用上有很大的区别。
@@ -8216,6 +8338,8 @@ class Box {
 由于所有修改操作都是在副本上进行的，并且在修改完成之前，读操作仍然是在旧数组上进行的，因此**读操作和写操作不会互相干扰
 
 ## JUC
+
+### ***java线程池底层原理，如何设计的
 
 ### ***java有哪些锁
 
@@ -8756,6 +8880,9 @@ G1 的回收过程主要涉及以下几种类型的 GC 活动，它们穿插进�
 * 单点登陆能力和强制用户下线能力：新设备登陆之后会生成一个新的长token，相当于单点登陆了。可以从redis中删除某个用户的长token（变相等于半个小时下线）
 
 ### **ZSet** 的高并发搜索热词
+
+* 根据zset的数据结构是hash表+跳表，hash表的key是搜索词，value是一个分数，比如我搜索一下java，就先给hash表中的java这个key的分数+1，然后通过原来的分数在跳表中找到原来的节点，删除掉，然后重新插入一个分数+1的新节点。
+* tiao'biao
 
 ### 统计在线人数
 
