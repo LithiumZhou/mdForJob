@@ -757,63 +757,157 @@ NSLog(@"%@", self.name); // self.name 的值是 "Initial"，没有被外部修�
 
 ### 四、解决方案
 
-要解决这个问题，核心思想就是**打破这个循环引用**。我们有多种方法可以实现。
+### 核心思想
 
-#### 方案一：在合适的时机手动停止 Timer
+传统的 `NSTimer` 循环引用链是：
 
-最简单直接的方法是，在视图控制器即将消失的时候，手动将 `timer` 停掉。`viewWillDisappear:` 或 `viewDidDisappear:` 是很好的时机。
+$$\text{Controller} \xrightarrow{\text{强引用}} \text{NSTimer} \xrightarrow{\text{强引用}} \text{Controller}$$
+
+中间代理对象的解决方案旨在将这个强引用链打断：
+
+$$\text{Controller} \xrightarrow{\text{强引用}} \text{NSTimer} \xrightarrow{\text{强引用}} \text{Proxy} \xrightarrow{\text{弱引用}} \text{Controller}$$
+
+这样，`Proxy` 对象虽然被 `NSTimer` 强引用，但它对 `Controller` 却是弱引用。当 `Controller` 需要被释放时，其引用计数可以归零并释放，而不会被 `Proxy` 锁住。
+
+### 代理对象的设计与实现
+
+我们需要一个专门的类来充当这个代理，它需要具备两个主要功能：
+
+1. **弱引用**真正的目标对象（`target`）。
+2. 能够接收 `NSTimer` 发出的消息（`selector`），并将消息**转发**给被弱引用的目标对象。
+
+
+
+#### 1. 定义代理类（例如：`MyWeakProxy`）
+
+**`MyWeakProxy.h`**
 
 ```objc
-// 在 MyViewController.m 中添加
-- (void)viewWillDisappear:(BOOL)animated {
-    [super viewWillDisappear:animated];
-    
-    // 在视图即将消失时，主动停止 timer
-    // 这会解除 timer 对 self 的强引用
-    [self.timer invalidate];
-    self.timer = nil;
-}
+#import <Foundation/Foundation.h>
+
+NS_ASSUME_NONNULL_BEGIN
+
+/**
+ * 一个弱引用代理对象，用于打破 NSTimer 和其 Target 之间的循环引用。
+ */
+@interface MyWeakProxy : NSProxy
+
+/**
+ * 通过指定的 Target 创建代理实例
+ *
+ * @param target 真正的目标对象，将被弱引用
+ * @return 代理实例
+ */
++ (instancetype)proxyWithTarget:(id)target;
+
+@end
+
+NS_ASSUME_NONNULL_END
 ```
 
-*   **优点**：简单易懂，改动最小。
-*   **缺点**：不够完美。如果 `timer` 是需要跨多个页面后台运行的，这种方法就不适用了。它只适用于 `timer` 的生命周期与视图控制器完全一致的场景。
+#### 2. 实现代理类 (`NSProxy` 的选择)
 
-### 2. 使用 Block 版本 API (推荐的现代方法)
+为了实现消息转发，通常可以选择继承 `NSObject` 或 `NSProxy`。**继承 `NSProxy` 是更优的方案，因为它更轻量，专门为消息转发设计。**
 
-在 iOS 10 / macOS 10.12 及更高版本中，苹果引入了基于 Block 的 `NSTimer` API，这允许我们使用 **弱引用 (Weak Reference)** 来打破循环。
-
-**Objective-C 代码（使用 Block API）：**
+**`MyWeakProxy.m`**
 
 Objective-C
 
 ```objc
-- (void)startTimer {
-    // 创建 MyClass 的弱引用
-    __weak typeof(self) weakSelf = self; 
+#import "MyWeakProxy.h"
 
-    // 使用 timerWithTimeInterval:repeats:block:
-    self.timer = [NSTimer scheduledTimerWithTimeInterval:1.0 
-                                                 repeats:YES 
-                                                   block:^(NSTimer * _Nonnull timer) {
-        // 在 Block 内部使用弱引用或临时强引用
-        __strong typeof(weakSelf) strongSelf = weakSelf;
-        if (strongSelf) {
-            [strongSelf timerFired:timer];
-        } else {
-            // 如果 strongSelf 为空，说明 MyClass 已经被释放了，此时需要停止定时器
-            [timer invalidate];
-        }
-    }];
+// 继承 NSProxy 而非 NSObject，因为它更适合做消息转发
+@implementation MyWeakProxy
+{
+    // 使用 weak 属性来持有真正的目标对象，这是打破循环的关键
+    __weak id _target;
 }
+
++ (instancetype)proxyWithTarget:(id)target {
+    // NSProxy 的 alloc/init 方式略有不同
+    MyWeakProxy *proxy = [MyWeakProxy alloc];
+    proxy->_target = target;
+    return proxy;
+}
+
+// =======================================================
+// 核心：消息转发机制
+// =======================================================
+
+// 1. 询问方法签名：当一个消息到达 Proxy 时，首先会询问它是否有处理该消息的方法签名
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)sel {
+    // 返回弱引用 target 的方法签名
+    return [_target methodSignatureForSelector:sel];
+}
+
+// 2. 消息转发：拿到签名后，将消息转发给弱引用 target
+- (void)forwardInvocation:(NSInvocation *)invocation {
+    // 只有当 target 仍然存在时，才执行消息转发
+    if (_target) {
+        // 设置消息的接收者为 target
+        [invocation invokeWithTarget:_target];
+    } 
+    // 如果 target 已经释放（nil），则忽略该消息，避免 Crash。
+    // 这也是 Timer 在 Controller 释放后依然触发但不会 Crash 的原因。
+}
+
+// 3. 额外处理：如果需要，可以处理 isProxy 这种特殊方法
+- (BOOL)respondsToSelector:(SEL)aSelector {
+    return [_target respondsToSelector:aSelector];
+}
+
+@end
 ```
 
-在这个方法中：
+### 3. 在 Controller 中使用代理对象
 
-- `MyClass` 强引用 `NSTimer` (不变)。
-- `NSTimer` 强引用它持有的 **Block**。
-- **Block** 内部通过 `__weak typeof(self) weakSelf` 来弱引用 `MyClass`。
+现在，我们在 `ViewController` 中使用这个代理来创建 `NSTimer`。
 
-这样就切断了 `NSTimer` → `MyClass` 的强引用链，从而解决了循环引用问题。
+Objective-C
+
+```objc
+// MyViewController.m
+
+@interface MyViewController ()
+@property (nonatomic, strong) NSTimer *timer;
+@end
+
+@implementation MyViewController
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    [self startTimer];
+}
+
+- (void)startTimer {
+    // 1. 创建弱引用代理对象
+    MyWeakProxy *proxy = [MyWeakProxy proxyWithTarget:self];
+    
+    // 2. 将 NSTimer 的 target 设置为 proxy
+    // 此时：self (强) -> self.timer (强) -> proxy (强) -> self (弱)
+    self.timer = [NSTimer scheduledTimerWithTimeInterval:1.0
+                                                target:proxy // 将目标设置为代理对象
+                                              selector:@selector(timerDidFire)
+                                              userInfo:nil
+                                               repeats:YES];
+}
+
+- (void)timerDidFire {
+    NSLog(@"Timer fired! Current count: %d", self.count++);
+    // ... 执行其他任务
+}
+
+// 3. 必须的收尾工作：在 dealloc 中销毁定时器
+- (void)dealloc {
+    // Controller 销毁时，引用计数归零，执行 dealloc
+    // 此时必须停止定时器，否则定时器（以及它强引用的 proxy）将持续存在
+    [self.timer invalidate];
+    self.timer = nil;
+    NSLog(@"MyViewController dealloc and timer invalidated.");
+}
+
+@end
+```
 
 ## ***autolayout原理
 
@@ -1938,9 +2032,157 @@ KVC 是通过 **Objective-C Runtime** 来实现的动态查找与赋值。
 
 > **KVC 是通过字符串 key 动态访问属性的机制，底层通过方法查找 + Runtime 直接操作 ivar 实现。**
 
+**关联对象使用和原理**
+
+在 **Objective-C（OC）** 中，“关联对象”（**Associated Objects**）是 **Runtime（运行时）** 提供的一种机制，它可以**在不修改类源码的情况下，为已有类动态添加属性或数据**。
+ 这在分类（`Category`）中非常常见，因为分类不能直接添加实例变量。
+
+------
+
+**🔧 一、关联对象的使用场景**
+
+最典型的用途是：
+
+- 给系统类（如 `UIView`、`UIButton`）动态添加自定义属性；
+- 在分类中模拟“成员变量”；
+
+------
+
+**🧩 二、关联对象的核心API**
+
+在 `<objc/runtime.h>` 中定义了四个核心函数：
+
+```objc
+void objc_setAssociatedObject(id object, const void *key, id value, objc_AssociationPolicy policy);
+id objc_getAssociatedObject(id object, const void *key);
+void objc_removeAssociatedObjects(id object);
+```
+
+- `object`：要关联的目标对象（通常是 `self`）。
+- `key`：唯一标识关联对象的“键”，常用 **静态变量地址**。
+- `value`：要关联的对象。
+- `policy`：内存管理策略（类似于属性修饰符）。
+- `objc_removeAssociatedObjects`：移除对象的所有关联对象。
+
+------
+
+**🧠 三、关联策略（`objc_AssociationPolicy`）**
+
+| 常量                                | 对应属性修饰符      | 说明                       |
+| ----------------------------------- | ------------------- | -------------------------- |
+| `OBJC_ASSOCIATION_ASSIGN`           | `assign`            | 不改变引用计数（容易悬垂） |
+| `OBJC_ASSOCIATION_RETAIN_NONATOMIC` | `strong, nonatomic` | 非原子强引用               |
+| `OBJC_ASSOCIATION_COPY_NONATOMIC`   | `copy, nonatomic`   | 非原子拷贝                 |
+| `OBJC_ASSOCIATION_RETAIN`           | `strong, atomic`    | 原子强引用                 |
+| `OBJC_ASSOCIATION_COPY`             | `copy, atomic`      | 原子拷贝                   |
+
+------
+
+**💻 四、完整使用示例**
+
+假设我们想给 `UIButton` 添加一个 “点击次数” 属性。
+
+### ✅ 1. 定义分类
+
+```objc
+#import <UIKit/UIKit.h>
+
+@interface UIButton (ClickCount)
+
+@property (nonatomic, assign) NSInteger clickCount;
+
+@end
+```
+
+------
+
+### ✅ 2. 实现分类
+
+```objc
+#import "UIButton+ClickCount.h"
+#import <objc/runtime.h>
+
+@implementation UIButton (ClickCount)
+
+// 定义唯一key
+static const void *kClickCountKey = &kClickCountKey;
+
+- (void)setClickCount:(NSInteger)clickCount {
+    // 将整数包装成 NSNumber
+    objc_setAssociatedObject(self, kClickCountKey, @(clickCount), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+- (NSInteger)clickCount {
+    return [objc_getAssociatedObject(self, kClickCountKey) integerValue];
+}
+
+@end
+```
+
+------
+
+### ✅ 3. 使用
+
+```objc
+UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
+btn.clickCount = 3;
+NSLog(@"点击次数：%ld", (long)btn.clickCount); // 输出 3
+```
+
+------
+
+**🚀 五、注意事项**
+
+1. **Key必须唯一**
+    一般使用 `static const void *key = &key;` 这种写法确保唯一性。
+2. **对象销毁时自动释放**
+    关联对象会在宿主对象销毁时自动释放，无需手动管理。
+3. **不能在分类中直接添加实例变量**
+    所以分类里只能靠关联对象来“伪装”属性。
+
+原理是 相当于维护了一个嵌套的hash表 ，第一个hash表的key是 主类对象的内存地址，value是一个hash表，这个表里面存了这个类的所有关联对象，key是set方法中定义的key，value就是关联对象及其修饰符策略
+
+## ***可以在子线程起一个nstimer吗，如果不希望子线程存活，怎么才能在子线程设计一个延时任务
+
+可以起,使用 dispatcher_after
+
+```objc
+// 1. 在后台队列中执行任务
+dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+    
+    // 2. 创建 Timer (注意：使用 timerWithTimeInterval: 而非 scheduledTimerWithTimeInterval:)
+    NSTimer *timer = [NSTimer timerWithTimeInterval:1.0 
+                                             target:self 
+                                           selector:@selector(timerFired:) 
+                                           userInfo:nil 
+                                            repeats:YES];
+    
+    // 3. 将 Timer 添加到当前线程的 RunLoop 中
+    // 必须使用 [NSRunLoop currentRunLoop] 获取当前的 RunLoop
+    [[NSRunLoop currentRunLoop] addTimer:timer forMode:NSDefaultRunLoopMode];
+    
+    // 4. 运行 RunLoop
+    // RunLoop 启动后，这个子线程将不会退出，直到 RunLoop 被停止
+    [[NSRunLoop currentRunLoop] run]; 
+    
+    // 注意：一旦 runloop 运行，下面的代码块将不会被执行
+    NSLog(@"RunLoop 停止"); 
+});
 
 
-## instance对象、类对象、元对象、isa指针
+- (void)timerFired:(NSTimer *)timer {
+    // 定时器回调方法会在这个子线程中执行
+    NSLog(@"定时器触发，当前线程: %@", [NSThread currentThread]);
+    
+    // 如果需要停止定时器并退出子线程:
+    // [timer invalidate];
+    // CFRunLoopStop(CFRunLoopGetCurrent()); // 停止当前的 RunLoop
+}
+```
+
+## ***不同的组件里面比如有十个都去hook了viewdidload 会有什么问题
+
+## ***instance对象、类对象、元对象、isa指针
 
 1.  **实例对象 (Instance) 在内存中是什么样的？** (我们平时 `alloc init` 出来的东西)
 2.  **类对象 (Class) 里面有什么？** (实例对象的 `isa` 指向的东西)
@@ -1985,8 +2227,6 @@ Person *person = [[Person alloc] init];
     *   **属性列表 (`property_list_t`)**: `@property` 声明的属性信息。
     *   **协议列表 (`protocol_list_t`)**: 这个类遵守的所有协议。
 
-
-
 ### Part 3: 元类对象 (Metaclass Object)
 
 我们已经知道，类对象也有一个 `isa` 指针，那它指向哪里呢？答案是**元类对象 (Metaclass)**。
@@ -2014,9 +2254,12 @@ Objective-C 的设计哲学是“一切皆对象”，消息发送是其核心�
 
 * **`superclass` 链 (横向)**: `子类` -> `父类` -> `NSObject` -> `nil`。这条链用于**继承**。当在本类的方法列表中找不到方法时，会沿着这条链向上查找。
 
-  
+## ***NSProxy有什么用
 
-## 如何扩大一个button的响应范围
+* 消息转发流程跳过前两个，只有forwardinvocation
+* 自身带有的方法很少，不像nsobject带有
+
+## ***如何扩大一个button的响应范围
 
 ### 1. 创建 `EnlargedHitTestButton` 类
 
@@ -2044,7 +2287,7 @@ NS_ASSUME_NONNULL_BEGIN
 NS_ASSUME_NONNULL_END
 ```
 
-### 3. 在 `.m` 文件中实现核心逻辑Z
+### 3. 在 `.m` 文件中实现核心逻辑
 
 ```objc
 #import "EnlargedHitTestButton.h"
@@ -2096,6 +2339,10 @@ NS_ASSUME_NONNULL_END
     // 实际点击区域将是 84x84 (44 + 20 + 20)
 }
 ```
+
+## ***如果没有重写转发的方法，这个类没有这个方法会crash吗 或者说会报错吗
+
+**`doesNotRecognizeSelector:` 的默认实现会抛出一个未捕获的异常**，通常是： `*** Terminating app due to uncaught exception 'NSInvalidArgumentException', reason: '-[YourClassName someMethodName]: unrecognized selector sent to instance 0x...'`
 
 ## SDWebImage这个库的详细介绍
 
@@ -6592,7 +6839,7 @@ SOLID 是面向对象设计中五个基本原则的首字母缩写，由罗伯�
     *   **含义**：软件实体（如类、模块、函数等）应该对扩展开放，对修改封闭。
     *   **目的**：允许在不修改现有代码的情况下增加新功能。这通常通过继承和多态，或者使用插件式架构来实现，从而提高了系统的稳定性和灵活性。
 *   **L - 里氏替换原则 **
-    *   **含义**：所有引用基类的地方必须能透明地使用其子类的对象，而程序行为不发生改变。简单来说，子类对象可以替换掉所有父类对象出现的地方，而不会引起任何错误或不符合预期的行为。
+    *   **含义**：简单来说，子类对象可以替换掉所有父类对象出现的地方，而不会引起任何错误或不符合预期的行为。
     *   **目的**：确保继承体系的正确性。子类不应该重写父类的方法以使其执行完全不同或不兼容的操作，这保证了代码的可靠性和可预测性。
 *   **D - 依赖倒置原则 **
     *   **含义**：高层模块不应该依赖于低层模块，两者都应该依赖于抽象。抽象不应该依赖于细节，细节应该依赖于抽象。
@@ -7381,8 +7628,6 @@ NSThread *thread = [[NSThread alloc] initWithTarget:self selector:@selector(runT
 // 手动启动线程
 [thread start];
 
-...
-
 - (void)runTask:(id)param {
     NSLog(@"Current Thread: %@, Parameter: %@", [NSThread currentThread], param);
     // 执行耗时操作...
@@ -7545,201 +7790,6 @@ NSBlockOperation *operation = [NSBlockOperation blockOperationWithBlock:^{
 | **`NSThread`**    | 直接创建和启动线程对象。                    | **是** (协作式，需手动检查 `isCancelled`) |
 | **`GCD`**         | 将任务 Block 添加到队列，由系统线程池管理。 | **否** (原生不支持)                       |
 | **`NSOperation`** | 将操作对象添加到操作队列。                  | **是** (原生支持，协作式，功能强大)       |
-
-## 知道iOS里面有哪些数据存储方法？什么时候该用哪些方法存储？
-
-### 方案一：`NSUserDefaults` (或 Swift 中的 `UserDefaults`)
-
-#### 1. 它是什么？
-
-`NSUserDefaults` 是一个**轻量级的持久化键值存储**系统。你可以把它想象成 App 的一个专属“**便签本**”或“**设置面板**”。
-
-*   **键值存储 (Key-Value)**：就像 `NSDictionary` 一样，你用一个唯一的字符串（Key）来存取一个值（Value）。
-*   **持久化 (Persistent)**：你存入的数据，即使用户关闭甚至重启 App，下次打开时依然存在。
-*   **轻量级 (Lightweight)**：它被设计用来存储少量、简单的数据。它的底层实现通常是一个小型的 Plist (属性列表) 文件，存放在 App 的沙盒目录里。
-
-#### 2. 适合存储什么？(The Right Job)
-
-`NSUserDefaults` 的设计目标非常明确：**存储用户的偏好设置和应用的简单状态**。
-
-**典型用例**:
-
-*   **用户设置**:
-    *   `"isNightModeEnabled": true` (夜间模式是否开启 - `Bool`)
-    *   `"fontSize": 16` (用户选择的字体大小 - `Int`)
-    *   `"username": "john_doe"` (用户上次登录的账号名 - `String`)
-    *   `"themeColor": "blue"` (用户选择的主题颜色 - `String`)
-
-*   **应用状态**:
-    *   `"hasShownOnboarding": true` (是否已经向用户展示过引导页 - `Bool`)
-    *   `"appLaunchCount": 25` (应用启动了多少次 - `Int`)
-
-**支持的数据类型**:
-它只能存储基础的 Plist 类型，包括 `NSNumber` (包含 `Int`, `Float`, `Bool`), `NSString`, `NSDate`, `NSData`, `NSArray`, 和 `NSDictionary`。
-
-#### 3. 如何使用？(The Code)
-
-它的 API 非常简单直观。
-
-```objc
-// 获取单例对象
-NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-
-// --- 写/存数据 ---
-
-// 存储一个 Bool 值
-[defaults setBool:YES forKey:@"isNightModeEnabled"];
-
-// 存储一个整型
-[defaults setInteger:16 forKey:@"fontSize"];
-
-// 存储一个字符串
-[defaults setObject:@"john_doe" forKey:@"username"];
-
-
-// --- 读/取数据 ---
-
-// 读取 Bool 值 (如果 key 不存在，会返回默认值 NO)
-BOOL isNightMode = [defaults boolForKey:@"isNightModeEnabled"];
-
-// 读取整型 (如果 key 不存在，会返回默认值 0)
-NSInteger fontSize = [defaults integerForKey:@"fontSize"];
-
-// 读取对象 (如果 key 不存在，会返回 nil)
-NSString *username = [defaults stringForKey:@"username"]; // 推荐使用 specific getter
-// 或者通用 getter
-// NSString *username = [defaults objectForKey:@"username"];
-
-
-// --- 删除数据 ---
-[defaults removeObjectForKey:@"username"];
-
-
-// --- 立即同步 ---
-// 通常你不需要手动调用它。系统会在合适的时机自动将数据写入磁盘。
-// 只有在极少数情况下，比如你担心 App 即将崩溃需要立即保存时，才可能用到。
-// [defaults synchronize]; // 在现代 iOS 中已不推荐主动调用
-```
-
-#### 4. 关键的“不适合”做什么？(The Wrong Job)
-
-理解它的局限性至关重要，滥用 `NSUserDefaults` 是新手常见的错误。
-
-*   **绝对不能存储敏感信息**：密码、API Token、密钥等。因为它是**明文存储**在文件里的，任何能接触到设备文件系统的人（比如越狱用户）都能轻易看到。
-*   **不适合存储大量数据**：不要把从服务器请求来的成百上千条新闻列表、聊天记录等存进去。因为 `NSUserDefaults` 会在某个时间点将整个文件加载到内存，大数据量会严重影响性能和内存占用。
-*   **它不是数据库**：它不支持查询、排序或条件过滤。如果你有“查找所有年龄大于 18 岁的用户”这类需求，`NSUserDefaults` 完全无能为力。
-
-#### 总结
-
-| 特性         | 描述                                                         |
-| :----------- | :----------------------------------------------------------- |
-| **核心定位** | 应用的“偏好设置面板”                                         |
-| **优点**     | **API 极其简单**，轻量，自动持久化                           |
-| **缺点**     | **不安全**，只适合**少量、非敏感**数据                       |
-| **黄金法则** | 当你问自己“这个数据是不是一个‘设置’项？”时，如果答案是肯定的，那么 `NSUserDefaults` 很可能就是正确的选择。 |
-
-好的，我们来看下一个。在处理比用户偏好设置更复杂、特别是涉及**敏感信息**时，`NSUserDefaults` 显然力不从心。这时，我们的主角就该登场了。
-
----
-
-### 方案二：`Keychain` (钥匙串)
-
-#### 1. 它是什么？
-
-`Keychain` (钥匙串) 是 iOS 系统提供的一个**高度安全的、加密的**数据存储服务。你可以把它想象成一个由操作系统管理的、极其坚固的**保险箱**。
-
-*   **安全加密 (Secure & Encrypted)**：存入钥匙串的数据会被系统使用行业标准的加密算法（如 AES）进行加密。即使设备被越狱，文件系统被访问，黑客也无法轻易解密其中的内容。
-*   **独立于应用 (App-Independent)**：这个“保险箱”不完全属于你的 App。它是整个操作系统的一部分。这意味着它的生命周期和你的 App 是**分离**的。
-*   **集中管理 (Centralized)**：系统统一管理所有 App 的钥匙串数据，并实施严格的访问控制。
-
-#### 2. 适合存储什么？(The Right Job)
-
-`Keychain` 的唯一目的就是：**存储少量、极其敏感的数据**。
-
-**典型用例**:
-
-*   **用户凭证**:
-    *   用户密码
-    *   登录后服务器返回的 `access_token` 或 `refresh_token`
-*   **私密信息**:
-    *   银行卡信息（虽然通常由更专业的支付 SDK 处理）
-    *   加密密钥、私钥
-    *   证书
-
-**一句话原则：任何“泄露出去会导致严重后果”的数据，都应该存储在 `Keychain` 中。**
-
-#### 3. 如何使用？(The Code)
-
-直接使用 Apple 提供的原生 `Security.framework` API 是一件非常痛苦和复杂的事情。它是纯 C 语言风格的，需要和 `CFDictionary` 等 Core Foundation 类型打交道，代码冗长且易错。
-
-因此，在实际项目中，**几乎所有开发者都会使用一个成熟的第三方开源库**来封装 `Keychain` 的操作。
-
-*   **推荐的封装库**：
-    *   `SAMKeychain` (Objective-C, 老牌、稳定)
-    *   `KeychainAccess` (Swift, 非常流行)
-
-下面以经典的 `SAMKeychain` 为例，展示其用法是多么简单：
-
-```objc
-#import "SAMKeychain.h"
-
-// --- 定义一个 Service Name 和 Account Name ---
-// 这两个字符串组合起来，作为你存储数据的唯一标识
-NSString * const kKeychainService = @"com.myapp.service";
-NSString * const kUserAccount = @"currentUser"; // 可以用 userID 或一个固定字符串
-
-// --- 写/存数据 ---
-// 假设 loginToken 是从服务器获取的敏感 Token 字符串
-NSError *error = nil;
-BOOL success = [SAMKeychain setPassword:loginToken 
-                              forService:kKeychainService 
-                                 account:kUserAccount 
-                                   error:&error];
-if (success) {
-    NSLog(@"Token 成功存入钥匙串！");
-} else {
-    NSLog(@"存储失败: %@", error);
-}
-
-
-// --- 读/取数据 ---
-NSError *readError = nil;
-NSString *storedToken = [SAMKeychain passwordForService:kKeychainService 
-                                                 account:kUserAccount 
-                                                   error:&readError];
-if (storedToken) {
-    NSLog(@"从钥匙串中读取到 Token: %@", storedToken);
-} else {
-    NSLog(@"读取失败或 Token 不存在: %@", readError);
-}
-
-
-// --- 删除数据 ---
-NSError *deleteError = nil;
-BOOL deleteSuccess = [SAMKeychain deletePasswordForService:kKeychainService 
-                                                    account:kUserAccount 
-                                                      error:&deleteError];
-if (deleteSuccess) {
-    NSLog(@"成功从钥匙串删除 Token！");
-}
-```
-
-#### 4. `Keychain` 的独特优势与特性
-
-*   **App 卸载后数据不丢失**：
-    这是 `Keychain` 最神奇的特性之一。默认情况下，用户**删除了你的 App，你存储在钥匙串里的数据依然会保留下来**。当用户下一次重新安装你的 App 时，你仍然可以读取到之前存储的 Token。
-    *   **应用场景**：可以实现“静默登录”或“恢复登录状态”的绝佳用户体验。
-
-*   **跨 App 共享数据**：
-    如果你在同一个开发者账号下有多个 App，可以通过配置 `App Groups` 和 `Keychain Sharing` 权限，让这些 App 访问同一个钥匙串项目。
-    *   **应用场景**：实现单点登录 (Single Sign-On, SSO)，用户在一个 App 中登录后，打开你的另一个 App 就自动是登录状态。
-
-#### 5. 局限性
-
-*   **不适合大数据**：`Keychain` 被设计用来存储少量数据，比如几十到几百字节的字符串。不要用它来存储图片、JSON 大段文本等。
-*   **读写性能较低**：由于涉及加密和解密操作，`Keychain` 的读写速度远慢于 `NSUserDefaults` 或文件系统。不应在需要高性能、频繁读写的场景（如循环中）使用。
-
-
 
 ## Objective-C vs. Java: 深入剖析两大编程语言的核心差异
 
@@ -8864,9 +8914,11 @@ G1 的回收过程主要涉及以下几种类型的 GC 活动，它们穿插进�
 
 ## easylive
 
+### 弹幕是怎么存储的，以及怎么实时读取的
+
 ### 分片上传和断点续传和完整性校验怎么实现的
 
-分片上传和断点续传是靠前后端协同来实现的，这个功能涉及两个接口，一个接口是预上传接口（预上传接口主要是为了生成和视频对应的Redis对象），一个是正式上传接口。当选择了一个视频之后，前端会立马根据文件的大小分片，每个分片是1m ，比如10m的文件就分成10片，此外还计算一个文件的hash值，这个时候就会去访问后端的预上传接口，把文件名和总共的分片大小和hash值这三个参数传给后端的预上传接口，这个接口会生成一个跟这个视频唯一对应的uuid，然后在redis中生成一个上传对象，上传对象主要存了几个字段，唯一的上传uuid，文件名，视频总共的分片数，文件保存路径，当前上传到哪一个的分片的分片索引，hash值。这个接口访问完了然后会返给前端一个唯一的视频id。然后就会访问正式上传的接口，这个接口的参数主要有，刚才给前端的唯一id，分片的文件， 当前上传的分片文件索引，然后每上传完一个文件，就会更新这个redis对象的当前分片上传索引。最后如果上传完了最后一个分片，就会合并成一个文件，计算一下md5值，然后从redis里面取一下这个hash值，校验一下文件完整性。这样就实现了分片上传，然后断点续传就是说，你带着这个uploadid去访问上传接口，就可以查到这个redis对象，然后根据这个redis对象可以知道现在该传哪个分片了，比如断网了也只会丢掉一个分片大小的文件。
+分片上传和断点续传是靠前后端协同来实现的，这个功能涉及两个接口，一个接口是预上传接口（预上传接口主要是为了生成和视频对应的Redis对象），一个是正式上传接口。当选择了一个视频之后，前端会立马根据文件的大小分片，每个分片是1m ，比如10m的文件就分成10片，此外还计算一个文件的hash值，分片完成之后就会去访问后端的预上传接口，把文件名和总共的分片大小和hash值这三个参数传给后端的预上传接口，这个接口会生成一个跟这个视频唯一对应的uuid，然后在redis中生成一个上传对象，上传对象主要存了几个字段，唯一的上传uuid，文件名，视频总共的分片数，文件保存路径，当前上传到哪一个的分片的分片索引，hash值。这个接口访问完了然后会返给前端一个唯一的视频id。然后就会访问正式上传的接口，这个接口的参数主要有，刚才给前端的唯一id，分片的文件， 当前上传的分片文件索引，然后每上传完一个文件，就会更新这个redis对象的当前分片上传索引。最后如果上传完了最后一个分片，就会合并成一个文件，计算一下md5值，然后从redis里面取一下这个hash值，校验一下文件完整性。这样就实现了分片上传，然后断点续传就是说，你带着这个uploadid去访问上传接口，就可以查到这个redis对象，然后根据这个redis对象可以知道现在该传哪个分片了，比如断网了也只会丢掉一个分片大小的文件。
 
 ### 双token无感刷新
 
@@ -8897,3 +8949,5 @@ eventbus就是一个事件总线
 **观察者模式的使用**：相当于发布转码任务是观察者发一个事件，然后事件里存一下转码文件的信息，然后观察者接收到之后就利用一个线程池异步转码。
 
 具体实现就是，定义一个事件类继承自`ApplicationEvent `,然后在service注入`ApplicationEventPublisher `处理完业务逻辑之后去发布这个事件，然后用@EventListener注解去定义一个观察者方法去观察某个具体事件类就行
+
+# 设计模式
