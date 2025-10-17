@@ -2344,6 +2344,8 @@ NS_ASSUME_NONNULL_END
 
 **`doesNotRecognizeSelector:` 的默认实现会抛出一个未捕获的异常**，通常是： `*** Terminating app due to uncaught exception 'NSInvalidArgumentException', reason: '-[YourClassName someMethodName]: unrecognized selector sent to instance 0x...'`
 
+## ***除了循环引用，还有什么内存泄漏的情况
+
 ## SDWebImage这个库的详细介绍
 
 ### 核心功能 / 为什么它如此受欢迎？
