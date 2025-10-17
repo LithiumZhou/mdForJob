@@ -2261,88 +2261,338 @@ Objective-C 的设计哲学是“一切皆对象”，消息发送是其核心�
 
 ## ***如何扩大一个button的响应范围
 
-### 1. 创建 `EnlargedHitTestButton` 类
-
-创建 `EnlargedHitTestButton.h` 和 `EnlargedHitTestButton.m` 文件。
-
-### 2. 在 `.h` 文件中声明属性
-
-在子类的头文件 (`EnlargedHitTestButton.h`) 中直接声明一个属性来存储边距，无需使用 Runtime：
-
-Objective-C
+这个是苹果**推荐且安全**的做法。
 
 ```objc
-z#import <UIKit/UIKit.h>
+@implementation MyButton
 
-NS_ASSUME_NONNULL_BEGIN
-
-@interface EnlargedHitTestButton : UIButton
-
-// 直接声明属性来存储您希望扩大的边缘值
-// 注意：负值表示向外扩大区域
-@property (nonatomic, assign) UIEdgeInsets hitTestEdgeInsets;
-
-@end
-
-NS_ASSUME_NONNULL_END
-```
-
-### 3. 在 `.m` 文件中实现核心逻辑
-
-```objc
-#import "EnlargedHitTestButton.h"
-
-@implementation EnlargedHitTestButton
-
-// 核心方法：判断点击点是否在响应区域内
 - (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
-    
-    UIEdgeInsets insets = self.hitTestEdgeInsets;
-    
-    // 如果没有设置扩展（即所有值都为 0），则直接调用父类判断
-    if (UIEdgeInsetsEqualToEdgeInsets(insets, UIEdgeInsetsZero)) {
-        return [super pointInside:point withEvent:event];
-    }
-    
-    // 计算新的响应区域 (CGRect)
-    // UIEdgeInsetsInsetRect 会根据负的 insets 值，把原始 bounds 扩大
-    // 注意：insets 应该是负值（例如：{-10, -10, -10, -10}）
-    CGRect enlargedBounds = UIEdgeInsetsInsetRect(self.bounds, insets);
-    
-    // 判断点击点是否在新区域内
-    return CGRectContainsPoint(enlargedBounds, point);
+    // 当前按钮的实际点击区域
+    CGRect bounds = self.bounds;
+    CGFloat extend = 20; // 点击范围向外扩展 20pt
+    bounds = CGRectInset(bounds, -extend, -extend);
+    return CGRectContainsPoint(bounds, point);
 }
 
 @end
 ```
 
-### 4. 使用方法
+### ✳️ 原理
 
-在你的 `ViewController.m` 中，使用这个自定义的子类：
+UIKit 在进行命中测试（`hitTest:withEvent:`）时，
+ 会调用每个视图的 `pointInside:withEvent:` 来判断“点击点是否在我内部”。
 
-```objc
-#import "EnlargedHitTestButton.h"
+👉 所以只要我们重写这个方法，**人为扩大判断区域**，
+ 系统就会认为按钮被点中了，即使用户点在边缘外也算。
 
-// ...
+### ✅ 优点
 
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    
-    // 实例化自定义按钮
-    EnlargedHitTestButton *myButton = [[EnlargedHitTestButton alloc] initWithFrame:CGRectMake(100, 100, 44, 44)];
-    [myButton setTitle:@"Click" forState:UIControlStateNormal];
-    [myButton setTitleColor:[UIColor systemBlueColor] forState:UIControlStateNormal];
-    [self.view addSubview:myButton];
+- 不影响布局；
+- 扩大点击区域的同时，视觉上仍然保持原大小；
+- 与 AutoLayout 完全兼容；
+- 不影响其他事件。
 
-    // 只需要设置这个属性即可扩大响应区域
-    myButton.hitTestEdgeInsets = UIEdgeInsetsMake(-20, -20, -20, -20);
-    // 实际点击区域将是 84x84 (44 + 20 + 20)
-}
-```
+### ⚠️ 注意
+
+这个方法只在「用户点在按钮附近」时生效；
+ 如果用户点得太远（超出 hitTest 递归区域），系统不会检查它。
 
 ## ***如果没有重写转发的方法，这个类没有这个方法会crash吗 或者说会报错吗
 
 **`doesNotRecognizeSelector:` 的默认实现会抛出一个未捕获的异常**，通常是： `*** Terminating app due to uncaught exception 'NSInvalidArgumentException', reason: '-[YourClassName someMethodName]: unrecognized selector sent to instance 0x...'`
+
+## ***标准转发详细解释
+
+`Signature `和`NSInvocation`的区别
+
+* `Signature`:描述一个方法的“签名信息”（返回值类型、参数类型、参数个数等）
+* `NSInvocation`:代表一次“具体的方法调用”，包含目标对象、方法选择器、参数值和返回值等,可以把这个方法调用转发给具体的对象
+* `NSInvocation`对转发给某个对象的本质就是再发一次obj_msgsend
+* `slotpage`的转发逻辑是，`methodSignatureForSelector`的逻辑就是查一下谁实现了这个sel，谁实现了就把这个`Signature`提出来，然后遍历停止。然后在`ForwardInvocation`中的逻辑就是遍历完所有的订阅者，只要实现了这个sel的，都通过`invocation`执行`invokewithtarget`。
+
+------
+
+**🌟 先说背景：为什么会调用这两个方法？**
+
+在 OC 里，如果对象接收了一个它**没有实现的方法调用**，系统会触发一套“**消息转发流程**”。
+ 这流程的关键阶段包括：
+
+1. **动态方法解析**：看看能不能临时加方法。
+2. **快速转发（forwardingTargetForSelector）**：看看能不能把这个方法转给别人。
+3. **完整消息转发（methodSignatureForSelector + forwardInvocation）**。
+
+你的代码就是第 3 阶段的完整消息转发。
+
+------
+
+**🧩 第 1 步：`- (NSMethodSignature *)methodSignatureForSelector:(SEL)selector`**
+
+这个方法的作用是：
+
+> 告诉系统“我知道这个方法长什么样（参数个数、返回值类型）”，这样系统才能构造一个 `NSInvocation` 来描述这个调用。
+
+如果你返回 `nil`，系统就会直接抛出 `unrecognized selector` 异常。
+
+------
+
+**🔍 看看代码**
+
+```objc
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)selector {
+    Lock
+    __block NSMethodSignature *signature = [super methodSignatureForSelector:selector];
+    if (signature) return signature;
+    
+    // 遍历所有订阅者，找谁能响应该方法
+    [self walkSubscribersRespondToEvent:selector withAction:^(id stepSubscriber, BOOL *stop) {
+        signature = [(id)stepSubscriber methodSignatureForSelector:selector];
+        *stop = YES; // 找到一个就够了
+    }];
+    
+    // 如果没找到，就随便返回一个签名，防止崩溃
+    return signature ?: [self methodSignatureForSelector:@selector(class)];
+    Unlock
+}
+```
+
+### 🧠 解释逻辑
+
+1. 先问父类要签名，看自己有没有实现。
+2. 如果没有，就去遍历 `subscribers`（订阅者们）。
+3. 找到第一个能响应这个 selector 的订阅者，取它的签名。
+4. 没有任何订阅者能响应时，就返回一个默认签名（比如 `@selector(class)`）以防崩溃。
+
+**目的**：为未知方法提供一个签名，使系统可以进入下一步——`forwardInvocation:`。
+
+------
+
+**🧩 第 2 步：`- (void)forwardInvocation:(NSInvocation *)invocation`**
+
+当系统有了签名，就会生成一个 `NSInvocation` 对象，它包含了：
+
+- 方法名（selector）
+- 所有参数值
+- 返回值占位
+- 调用目标（target）
+
+然后系统调用你这个方法，让你决定这个调用要发给谁。
+
+------
+
+### 🔍 看看代码
+
+```objc
+- (void)forwardInvocation:(NSInvocation *)invocation {
+    Lock
+    SEL selector = [invocation selector];
+    [self walkSubscribersRespondToEvent:selector withAction:^(id stepSubscriber, BOOL *stop) {
+        if ([stepSubscriber respondsToSelector:selector]) {
+            [invocation invokeWithTarget:stepSubscriber];
+        }
+    }];
+    Unlock
+}
+```
+
+### 🧠 解释逻辑
+
+这段的意思是：
+
+1. 获取调用的 selector。
+
+2. 遍历所有订阅者。
+
+3. 对能响应这个 selector 的订阅者，**把调用“转发”给它们执行**：
+
+   ```objc
+   [invocation invokeWithTarget:stepSubscriber];
+   ```
+
+   相当于执行 `[stepSubscriber performSelector:selector ...]`
+
+4. 不返回结果（如果多个订阅者都执行，它会被广播）。
+
+------
+
+**🔄 两步合起来理解：**
+
+| 阶段 | 方法                          | 功能                                                      |
+| ---- | ----------------------------- | --------------------------------------------------------- |
+| 1️⃣    | `methodSignatureForSelector:` | 告诉系统“我知道这个方法长什么样”，从订阅者中找签名        |
+| 2️⃣    | `forwardInvocation:`          | 系统根据签名创建 `NSInvocation`，你再把这个消息“广播”出去 |
+
+## ***autoreleasepool
+
+1. **主线程的事件循环（系统层面，我们无感知）**：iOS应用的主线程RunLoop在每次事件循环（如处理一次点击、一次屏幕刷新）的开始和结束，系统都会自动地为我们创建和销毁一个自动释放池。这就是为什么我们在viewDidLoad或者按钮点击方法里创建的临时对象能够被自动回收的原因。
+2. **循环中产生大量临时对象（开发者必须手动干预）**：这是我们需要手动使用它的最经典场景。比如在一个for循环中，如果需要反复地读取文件、处理图片、解析数据，会产生大量临时对象。
+   - **如果不加池子**：这些临时对象会全部堆积在当前RunLoop的那个“大池子”里，直到事件循环结束才被释放，这会导致**内存峰值瞬间暴涨**，甚至可能因为内存不足而导致程序崩溃。
+   - **正确做法**：在循环内部用@autoreleasepool把代码包起来。这样，每次循环结束时，池子就会被销毁，本次循环产生的临时对象被**立即回收**，使得内存使用非常平稳，大大优化了性能。
+3. **自己创建的子线程**：如果我们自己通过NSThread等方式创建并启动一个子线程，这个线程默认是没有自动释放池的。我们必须在该线程的执行方法内部，手动用@autoreleasepool包裹代码，否则所有在这个线程中产生的autoreleased对象都将无法被释放，造成严重的内存泄漏。
+
+好的，这是一个非常深入的问题，能问到这里，说明您已经对OC的内存管理有了相当的理解。自动释放池的底层原理是Objective-C运行时（Runtime）一个非常精巧的设计。
+
+我们可以从**数据结构**、**关键函数**和**与线程的关系**三个层面来彻底解析它。
+
+---
+
+### 一、核心数据结构：`AutoreleasePoolPage`
+
+自动释放池并不是一个简单的数组或栈，它的底层实现依赖于一个C++类——`AutoreleasePoolPage`。
+
+你可以把整个自动释放池系统想象成一个**以线程为单位的双向链表**，链表中的每一个节点就是一个 `AutoreleasePoolPage` 对象。
+
+**`AutoreleasePoolPage` 的特点：**
+
+1.  **固定大小**：每个 `AutoreleasePoolPage` 对象都是一个固定大小（通常是4096字节，即一页内存）的内存区域。
+2.  **内部结构**：它内部除了存储一些管理信息（如指向父、子页面的指针）外，主要是一个**栈结构**，用来存放被`autorelease`的对象的**指针**。它有一个`next`指针，指向栈顶，每次有新对象加入，`next`就向上移动。
+3.  **双向链表**：当一个`AutoreleasePoolPage`满了之后，它会自动创建一个新的页面（`child`），并与自己连接起来，形成一个双向链表。这样就解决了单个池子容量有限的问题。
+
+**简单来说：** 自动释放池在底层是由一连串的 `AutoreleasePoolPage` 页面组成的，这些页面构成了一个链表，而每个页面内部又是一个后进先出（LIFO）的栈，用来存放对象指针。
+
+---
+
+### 二、关键函数：`push` 和 `pop`
+
+我们写的 `@autoreleasepool` 只是一个语法糖。在编译时，编译器会把它转换成对两个核心函数的调用：`objc_autoreleasePoolPush()` 和 `objc_autoreleasePoolPop()`。
+
+```objectivec
+// 你写的代码：
+@autoreleasepool {
+    // ... do something ...
+}
+
+// 编译器转换后的伪代码：
+void *pool = objc_autoreleasePoolPush();
+// ... do something ...
+objc_autoreleasePoolPop(pool);
+```
+
+#### 1. `objc_autoreleasePoolPush()`
+
+当这个函数被调用时，它并**不是**真的创建了一个全新的 `AutoreleasePoolPage`。它做了一个非常巧妙的操作：
+
+它向当前线程的 `AutoreleasePoolPage` 的栈顶压入一个**“哨兵”对象（Sentinel Object）**。
+
+*   **哨兵**：你可以把它理解为一个特殊的`nil`或者一个边界标记。它不代表任何真实的对象，它的唯一作用就是**标记一个自动释放池的边界**。
+*   `objc_autoreleasePoolPush()` 会返回这个哨兵的地址，也就是上面伪代码中的`pool`变量。
+
+#### 2. `[obj autorelease]` (ARC自动插入)
+
+当一个对象需要被放入池中时（在ARC下由编译器自动处理），会调用 `objc_autorelease(obj)` 函数。这个函数会找到当前线程正在使用的 `AutoreleasePoolPage`，然后把这个对象的指针压入到页面的栈顶。
+
+#### 3. `objc_autoreleasePoolPop(pool)`
+
+当代码执行到 `}` 时，`objc_autoreleasePoolPop()` 函数被调用，并把之前 `push` 操作返回的那个“哨兵”地址作为参数传进去。
+
+这个函数的工作流程是：
+
+1.  从当前 `AutoreleasePoolPage` 的栈顶开始。
+2.  依次取出栈中的每一个对象指针。
+3.  向取出的对象发送一条 `release` 消息。
+4.  一直重复这个过程，直到遇到那个作为边界的**哨兵对象**为止。
+
+这就完美地解释了池子的嵌套关系：内层池子`pop`的时候，只会释放到内层池子的哨兵那里，绝不会影响到外层池子的对象。
+
+---
+
+### 三、与线程的关系：线程局部存储 (Thread-Local Storage)
+
+自动释放池的一个极其重要的特性是：**池是与线程严格绑定的**。
+
+*   每个线程都维护着自己独立的**自动释放池栈**（`AutoreleasePoolPage` 的链表）。
+*   一个线程的操作完全不会影响到另一个线程的自动释放池。
+
+这是通过**线程局部存储（TLS）**技术实现的。运行时系统会在一个专门的数据结构中，以当前线程ID为key，存储该线程的`AutoreleasePoolPage`链表信息。当调用`push`或`pop`时，系统会先获取当前线程ID，然后找到专属于这个线程的池子进行操作。
+
+这就是为什么我们常说：“主线程有自己的RunLoop来管理池子，而子线程需要你手动创建池子。”
+
+这是一个非常关键且精准的问题！您的理解是完全正确的。
+
+**出栈操作本身，并不等同于“释放对象内存”。**
+
+我们可以把“出栈”这个操作，更精确地理解为：**自动释放池放弃了对池内对象的“延迟释放”的责任，并将这个决定权交还给了对象的引用计数系统。**
+
+## ***autoReleasePool在什么情况下使用
+
+### ✅ 1. **子线程中**
+
+子线程默认**没有 autoreleasepool**！
+ 所以如果你在子线程中创建了很多自动释放对象，内存不会立刻释放。
+
+例子：
+
+```objc
+dispatch_async(dispatch_get_global_queue(0, 0), ^{
+    // ❌ 没有 autoreleasepool，内存会积压到线程退出
+    for (int i = 0; i < 10000; i++) {
+        NSString *str = [NSString stringWithFormat:@"task %d", i];
+    }
+});
+```
+
+改成这样 ✅：
+
+```objc
+dispatch_async(dispatch_get_global_queue(0, 0), ^{
+    @autoreleasepool {
+        for (int i = 0; i < 10000; i++) {
+            NSString *str = [NSString stringWithFormat:@"task %d", i];
+        }
+    }
+});
+```
+
+💡 原因：子线程默认不会有 RunLoop，也不会自动创建 autoreleasepool。
+
+------
+
+✅ 2. **大循环中创建大量临时对象**
+
+即使在主线程中，如果你写了一个很大的循环，比如处理图片、字符串等：
+
+```objc
+for (int i = 0; i < 10000; i++) {
+    NSString *str = [NSString stringWithFormat:@"index %d", i];
+}
+```
+
+虽然主线程有 autoreleasepool，但它只会在一帧结束时清空。
+ 如果循环太多对象，就会在内存中堆积。
+
+解决方法：
+
+```objc
+for (int i = 0; i < 10000; i++) {
+    @autoreleasepool {
+        NSString *str = [NSString stringWithFormat:@"index %d", i];
+    }
+}
+```
+
+✅ 每次循环结束立即释放上次创建的自动释放对象，降低峰值内存占用。
+
+✅ 4. **自己手动管理 RunLoop 或线程**
+
+如果你写了自定义的线程循环（比如网络下载线程、日志线程）：
+
+```objc
+- (void)startWorkerThread {
+    while (!self.stopped) {
+        @autoreleasepool {
+            // 执行任务
+            [self doWork];
+        }
+    }
+}
+```
+
+✅ 每次循环清空 autoreleasepool，防止内存泄漏。
+
+## ***动态库和静态库有什么区别
+
+## ***ios冷启动优化
+
+
 
 ## SDWebImage这个库的详细介绍
 
@@ -2780,135 +3030,6 @@ self.count = self.count + 1;
 * 对象类型`@property (strong, atomic, readwrite) NSString *name;`
 
 * 非对象类型`@property (assign, atomic, readwrite) NSInteger score`
-
-## autoreleasepool
-
-1. **主线程的事件循环（系统层面，我们无感知）**：iOS应用的主线程RunLoop在每次事件循环（如处理一次点击、一次屏幕刷新）的开始和结束，系统都会自动地为我们创建和销毁一个自动释放池。这就是为什么我们在viewDidLoad或者按钮点击方法里创建的临时对象能够被自动回收的原因。
-2. **循环中产生大量临时对象（开发者必须手动干预）**：这是我们需要手动使用它的最经典场景。比如在一个for循环中，如果需要反复地读取文件、处理图片、解析数据，会产生大量临时对象。
-   - **如果不加池子**：这些临时对象会全部堆积在当前RunLoop的那个“大池子”里，直到事件循环结束才被释放，这会导致**内存峰值瞬间暴涨**，甚至可能因为内存不足而导致程序崩溃。
-   - **正确做法**：在循环内部用@autoreleasepool把代码包起来。这样，每次循环结束时，池子就会被销毁，本次循环产生的临时对象被**立即回收**，使得内存使用非常平稳，大大优化了性能。
-3. **自己创建的子线程**：如果我们自己通过NSThread等方式创建并启动一个子线程，这个线程默认是没有自动释放池的。我们必须在该线程的执行方法内部，手动用@autoreleasepool包裹代码，否则所有在这个线程中产生的autoreleased对象都将无法被释放，造成严重的内存泄漏。
-
-好的，这是一个非常深入的问题，能问到这里，说明您已经对OC的内存管理有了相当的理解。自动释放池的底层原理是Objective-C运行时（Runtime）一个非常精巧的设计。
-
-我们可以从**数据结构**、**关键函数**和**与线程的关系**三个层面来彻底解析它。
-
----
-
-### 一、核心数据结构：`AutoreleasePoolPage`
-
-自动释放池并不是一个简单的数组或栈，它的底层实现依赖于一个C++类——`AutoreleasePoolPage`。
-
-你可以把整个自动释放池系统想象成一个**以线程为单位的双向链表**，链表中的每一个节点就是一个 `AutoreleasePoolPage` 对象。
-
-**`AutoreleasePoolPage` 的特点：**
-
-1.  **固定大小**：每个 `AutoreleasePoolPage` 对象都是一个固定大小（通常是4096字节，即一页内存）的内存区域。
-2.  **内部结构**：它内部除了存储一些管理信息（如指向父、子页面的指针）外，主要是一个**栈结构**，用来存放被`autorelease`的对象的**指针**。它有一个`next`指针，指向栈顶，每次有新对象加入，`next`就向上移动。
-3.  **双向链表**：当一个`AutoreleasePoolPage`满了之后，它会自动创建一个新的页面（`child`），并与自己连接起来，形成一个双向链表。这样就解决了单个池子容量有限的问题。
-
-**简单来说：** 自动释放池在底层是由一连串的 `AutoreleasePoolPage` 页面组成的，这些页面构成了一个链表，而每个页面内部又是一个后进先出（LIFO）的栈，用来存放对象指针。
-
----
-
-### 二、关键函数：`push` 和 `pop`
-
-我们写的 `@autoreleasepool` 只是一个语法糖。在编译时，编译器会把它转换成对两个核心函数的调用：`objc_autoreleasePoolPush()` 和 `objc_autoreleasePoolPop()`。
-
-```objectivec
-// 你写的代码：
-@autoreleasepool {
-    // ... do something ...
-}
-
-// 编译器转换后的伪代码：
-void *pool = objc_autoreleasePoolPush();
-// ... do something ...
-objc_autoreleasePoolPop(pool);
-```
-
-#### 1. `objc_autoreleasePoolPush()`
-
-当这个函数被调用时，它并**不是**真的创建了一个全新的 `AutoreleasePoolPage`。它做了一个非常巧妙的操作：
-
-它向当前线程的 `AutoreleasePoolPage` 的栈顶压入一个**“哨兵”对象（Sentinel Object）**。
-
-*   **哨兵**：你可以把它理解为一个特殊的`nil`或者一个边界标记。它不代表任何真实的对象，它的唯一作用就是**标记一个自动释放池的边界**。
-*   `objc_autoreleasePoolPush()` 会返回这个哨兵的地址，也就是上面伪代码中的`pool`变量。
-
-#### 2. `[obj autorelease]` (ARC自动插入)
-
-当一个对象需要被放入池中时（在ARC下由编译器自动处理），会调用 `objc_autorelease(obj)` 函数。这个函数会找到当前线程正在使用的 `AutoreleasePoolPage`，然后把这个对象的指针压入到页面的栈顶。
-
-#### 3. `objc_autoreleasePoolPop(pool)`
-
-当代码执行到 `}` 时，`objc_autoreleasePoolPop()` 函数被调用，并把之前 `push` 操作返回的那个“哨兵”地址作为参数传进去。
-
-这个函数的工作流程是：
-
-1.  从当前 `AutoreleasePoolPage` 的栈顶开始。
-2.  依次取出栈中的每一个对象指针。
-3.  向取出的对象发送一条 `release` 消息。
-4.  一直重复这个过程，直到遇到那个作为边界的**哨兵对象**为止。
-
-这就完美地解释了池子的嵌套关系：内层池子`pop`的时候，只会释放到内层池子的哨兵那里，绝不会影响到外层池子的对象。
-
----
-
-### 三、与线程的关系：线程局部存储 (Thread-Local Storage)
-
-自动释放池的一个极其重要的特性是：**池是与线程严格绑定的**。
-
-*   每个线程都维护着自己独立的**自动释放池栈**（`AutoreleasePoolPage` 的链表）。
-*   一个线程的操作完全不会影响到另一个线程的自动释放池。
-
-这是通过**线程局部存储（TLS）**技术实现的。运行时系统会在一个专门的数据结构中，以当前线程ID为key，存储该线程的`AutoreleasePoolPage`链表信息。当调用`push`或`pop`时，系统会先获取当前线程ID，然后找到专属于这个线程的池子进行操作。
-
-这就是为什么我们常说：“主线程有自己的RunLoop来管理池子，而子线程需要你手动创建池子。”
-
-这是一个非常关键且精准的问题！您的理解是完全正确的。
-
-**出栈操作本身，并不等同于“释放对象内存”。**
-
-我们可以把“出栈”这个操作，更精确地理解为：**自动释放池放弃了对池内对象的“延迟释放”的责任，并将这个决定权交还给了对象的引用计数系统。**
-
-## autoReleasePool在什么情况下使用
-
-* **在循环中创建大量临时对象** 
-
-* #### 在主线程之外，创建了一个需要长期运行的子线程
-
-  - **问题描述**：
-    - 主线程有系统自动管理的 Autorelease Pool。
-    - 但是，如果你自己创建了一个子线程（比如使用 NSThread），并且这个线程需要**长期存在**（而不是执行完一个 Block 就退出），那么这个子线程**默认是没有** Autorelease Pool 的。
-    - 如果你在这个子线程里，创建了任何 autorelease 的对象，它们将**无处可去**，永远不会被添加到任何 Pool 中，从而**导致内存泄漏**。
-  - **解决方案：为子线程手动创建自己的“顶层” Pool**
-
-  ```objc
-  // 【好例子】
-  + (void)myThreadMain {
-      // 为整个线程的生命周期，创建一个顶层的 Autorelease Pool
-      @autoreleasepool {
-          
-          NSLog(@"子线程开始运行...");
-          
-          // 你可以在这里设置一个 RunLoop，让线程持续运行
-          NSRunLoop *runLoop = [NSRunLoop currentRunLoop];
-          [runLoop addPort:[NSMachPort port] forMode:NSDefaultRunLoopMode];
-          
-          // 启动 RunLoop
-          while (![NSThread currentThread].isCancelled) {
-              // 在 RunLoop 的每一次循环内部，也创建一个小 Pool
-              // 这和主线程的机制是一样的
-              @autoreleasepool {
-                  [runLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate distantFuture]];
-              }
-          }
-          
-          NSLog(@"子线程即将退出...");
-      } // 顶层 Pool 在线程退出时被销毁
-  }
-  ```
 
 ## 什么对象会加入autoReleasePool
 
@@ -4428,145 +4549,16 @@ objc_msgSend(receiver, selector, arg1, arg2, ...);
 
 ## viewcontroller的生命周期
 
-好的，这是一个 iOS 开发面试中的“必考题”。理解 `UIViewController` 的生命周期，是进行 iOS App 开发的基础。
-
-一个 `UIViewController` 的生命周期，指的是从它被创建、显示在屏幕上，直到它从屏幕上消失、被销lehui的整个过程。在这个过程中，系统会在特定的时间点，自动调用一系列预先定义好的方法，让开发者有机会在这些时间点执行自己的代码。
-
----
-
-### 核心生命周期方法（按典型顺序）
-
-以下是当一个视图控制器被加载并显示出来的过程中，最核心、最常用的生命周期方法的调用顺序。
-
-#### 1. 初始化阶段
-
-*   **`init` / `initWithNibName:bundle:` / `initWithCoder:`**
-    *   **时机**: 当你通过代码 (`[[MyViewController alloc] init]`)、从 Storyboard 或 XIB 文件创建 `UIViewController` 的实例时被调用。
-    *   **职责**:
-        *   这是对象的**第一次**初始化机会。
-        *   **只应该**在这里做与视图（`view`）无关的、最基础的数据初始化工作。比如，初始化一些属性的默认值。
-        *   **严禁**在这里访问 `self.view` 或操作任何 UI 控件，因为此时 `view` 还没有被创建，访问它会导致 `loadView` 被提前调用，引发问题。
-
-#### 2. 视图加载阶段
-
-*   **`loadView`**
-    *   **时机**: 当 `self.view` **第一次被访问**，并且它恰好是 `nil` 的时候，这个方法会被自动调用。
-    *   **职责**:
-        *   它的**唯一职责**就是**创建**视图控制器的根视图（`self.view`）。
-        *   如果你是纯代码开发，不使用 Storyboard 或 XIB，那么你通常会重写这个方法，在这里创建一个 `UIView`（或者 `UIScrollView` 等）并赋值给 `self.view`。
-        *   **如果你重写了 `loadView`，你必须自己给 `self.view` 赋值，并且绝对不能调用 `[super loadView]`。**
-        *   如果你使用 Storyboard 或 XIB，系统会自动帮你完成 `loadView` 的工作，你**永远不应该**主动调用或重写它。
-
-*   **`viewDidLoad`**
-    *   **时机**: 在 `loadView` 成功创建并加载了视图层级（`view hierarchy`）到内存后被调用。此时，`self.view` 已经有值，并且 `outlet` 已经被连接。
-    *   **职责**:
-        *   这是生命周期中**最常用**的方法之一。
-        *   在这里进行视图的**一次性设置**。因为 `viewDidLoad` 在整个生命周期中通常只会被调用一次。
-        *   **适合做**：
-            *   添加子视图 (`[self.view addSubview:...]`)。
-            *   设置约束 (Auto Layout)。
-            *   为 UI 控件赋值初始数据。
-            *   发起网络请求，加载页面所需的数据。
-
-#### 3. 视图显示/消失阶段 (可能会被多次调用)
-
-这一组方法会在视图控制器每次出现或消失时被成对调用，比如 Tab 切换、Push/Pop、Present/Dismiss。
-
-*   **`viewWillAppear:`**
-    *   **时机**: 在视图即将被添加到视图层级中，显示在屏幕上**之前**被调用。
-    *   **职责**:
-        *   做一些视图显示前的准备工作。
-        *   **适合做**：
-            *   更新 UI 状态，确保界面显示的是最新数据。
-            *   设置 `navigationBar` 的样式。
-            *   注册通知或 KVO。
-            *   启动一些动画。
-
-*   **`viewDidAppear:`**
-    *   **时机**: 在视图已经完全显示在屏幕上，动画执行完毕**之后**被调用。
-    *   **职责**:
-        *   处理视图显示之后才能执行的任务。
-        *   **适合做**：
-            *   处理一些比较耗时的数据加载或计算（避免阻塞 `viewWillAppear` 影响过渡动画）。
-            *   启动复杂的动画或视频播放。
-            *   弹出提示框。
-
-*   **`viewWillDisappear:`**
-    *   **时机**: 在视图即将从视图层级中移除，从屏幕上消失**之前**被调用。
-    *   **职责**:
-        *   执行清理工作或保存状态。
-        *   **适合做**：
-            *   保存用户输入的数据。
-            *   取消网络请求。
-            *   移除通知或 KVO。
-            *   将 `navigationBar` 恢复原状。
-
-*   **`viewDidDisappear:`**
-    *   **时机**: 在视图已经完全从屏幕上消失，动画执行完毕**之后**被调用。
-    *   **职责**:
-        *   执行最终的清理工作。
-        *   **适合做**：
-            *   停止动画、计时器或视频播放。
-            *   释放一些大的、只在页面显示时才需要的资源。
-
-#### 4. 内存与销毁阶段
-
-*   **`dealloc`**
-    *   **时机**: 当视图控制器的引用计数为0，即将被系统销毁时调用。
-    *   **职责**:
-        *   执行最终的、彻底的清理工作。
-        *   **必须做**：
-            *   移除所有未移除的通知 (`[[NSNotificationCenter defaultCenter] removeObserver:self]`)。
-            *   将 `delegate` 指针置为 `nil` (在非 ARC 或需要手动管理的情况下)。
-            *   停止所有 `NSTimer` 并将其置为 `nil`。
-            *   取消 KVO 监听。
-        *   **严禁**在这里调用 `[super dealloc]` (在 ARC 环境下)。
-
----
-
-### 视图布局相关的生命周期方法
-
-除了上述核心方法，还有一组与 Auto Layout 相关的生命周期方法。
-
-*   **`viewWillLayoutSubviews`**
-    *   **时机**: 在视图控制器的 `view` 即将布局其子视图**之前**被调用。
-    *   **职责**: 在这里可以修改约束，为即将到来的布局做准备。
-
-*   **`viewDidLayoutSubviews`**
-    *   **时机**: 在视图控制器的 `view` 已经布局完其子视图**之后**被调用。
-    *   **职责**: 在这里可以获取到子视图**最终**的、准确的 `frame`。如果你的某些操作依赖于 UI 控件的最终尺寸和位置，应该在这里执行，而不是在 `viewDidLoad` 里（因为那时的 `frame` 可能是不准确的）。
-
----
-
-### 总结图
-
-```
- [init] -> [loadView] -> [viewDidLoad]
-     |                               ^
-     |                               | (内存警告时，view被卸载，再次访问时重新加载)
-     |                               |
-     +-------------------------------+
-     |
-     V
- [viewWillAppear:] -> [viewWillLayoutSubviews] -> [viewDidLayoutSubviews] -> [viewDidAppear:]
-     ^                                                                            |
-     | (页面再次出现)                                                            | (页面消失)
-     +--------------------------------------------------------------------------+
-     |
-     V
- [viewWillDisappear:] -> [viewDidDisappear:]
-     |
-     | (VC 被销毁)
-     V
- [dealloc]
-```
-
-**面试时的回答策略**:
-1.  **先说核心流程**: 按照 `init` -> `loadView` -> `viewDidLoad` -> `viewWillAppear` -> `viewDidAppear` -> `viewWillDisappear` -> `viewDidDisappear` -> `dealloc` 的顺序清晰地讲一遍。
-2.  **解释每个方法的核心职责**: 清楚地说明在每个方法里“应该做什么”和“不应该做什么”。
-3.  **强调 `viewDidLoad` 与 `viewWillAppear` 的区别**: `viewDidLoad` 只调用一次，适合做一次性初始化；`viewWillAppear` 会被多次调用，适合做每次页面出现都需要更新的操作。
-4.  **(加分项) 提及布局相关的方法**: 主动说出 `viewWillLayoutSubviews` 和 `viewDidLayoutSubviews`，并解释它们与 `viewDidLoad` 在获取 `frame` 上的区别，能体现你对 Auto Layout 流程的理解。
-5.  **(加分项) 提及内存警告**: 说明在旧的系统版本中，`view` 可能会在内存警告时被卸载，之后再次触发 `loadView` 和 `viewDidLoad` 的流程。
+| 阶段           | 方法名                             | 调用时机                                           | 典型用途                                         | 注意事项                                           |
+| -------------- | ---------------------------------- | -------------------------------------------------- | ------------------------------------------------ | -------------------------------------------------- |
+| 1️⃣ 初始化阶段   | `initWithNibName:bundle:` / `init` | 控制器对象刚创建时                                 | 初始化属性、依赖注入                             | 不要访问 `self.view`，此时还没创建                 |
+| 2️⃣ 加载视图层级 | `loadView`                         | 当系统第一次访问 `self.view` 且 view 为 nil 时调用 | 手动创建根视图（如果不使用 Storyboard/XIB）      | 通常不重写，除非想完全自定义视图结构               |
+| 3️⃣ 视图加载完成 | `viewDidLoad`                      | `loadView` 调用完后立即执行，一生只调用一次        | 初始化 UI、添加子视图、布局、网络请求初始化      | 这里访问 `view` 安全，但不要做动画或依赖布局的操作 |
+| 4️⃣ 即将显示     | `viewWillAppear:`                  | 视图即将出现在屏幕上（每次出现都会调用）           | 更新 UI 状态（如导航栏样式）、刷新数据、监听事件 | 不适合执行耗时操作（会影响显示速度）               |
+| 5️⃣ 已经显示     | `viewDidAppear:`                   | 视图已经显示在屏幕上                               | 启动动画、开始网络请求、播放视频、埋点统计       | 这里可以安全地执行动画或布局依赖的逻辑             |
+| 6️⃣ 即将消失     | `viewWillDisappear:`               | 视图即将从屏幕消失                                 | 停止动画、保存状态、取消任务                     | 不适合做耗时清理，UI 线程应保持流畅                |
+| 7️⃣ 已经消失     | `viewDidDisappear:`                | 视图完全离开屏幕                                   | 停止定时器、移除监听、释放资源                   | 注意避免重复添加监听（可能导致泄漏）               |
+| 8️⃣ 视图释放     | `dealloc`                          | 控制器被释放时                                     | 移除通知、KVO、释放资源、l                       | 一定要在这里释放强引用的对象防止内存泄漏           |
 
 ## 字典的key一般是什么？
 
