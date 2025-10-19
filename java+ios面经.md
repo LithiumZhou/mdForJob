@@ -726,36 +726,22 @@ NSLog(@"%@", self.name); // self.name 的值是 "Initial"，没有被外部修�
 
 ### 二、循环引用是如何形成的？
 
-这段看似正常的代码，却隐藏着一个致命的循环引用，我们可以称之为“死亡拥抱”：
+self持有timer，timer强引用self，runloop持有timer
 
-1.  **控制器强引用 Timer**：
-    `MyViewController` 有一个 `strong` 属性 `timer`。所以，`self` -> `timer` 是一条**强引用**。
+所以利用一个nsproxy对象打破循环引用
 
-2.  **Timer 强引用控制器**：
-    这是最关键的一点。当你调用 `[NSTimer scheduledTimerWithTimeInterval:target:selector:...]` 时，`NSTimer` 对象为了能够在指定时间间隔后调用 `target` 的 `selector` 方法，它必须**持有**这个 `target`。因此，`NSTimer` 会**强引用**它的 `target`。所以，`timer` -> `self` 也是一条**强引用**。
+self持有timer，timer持有proxy，proxy弱持有self，在proxy重写`forwardInvocation`转发给self即可
 
-**结果就形成了一个无法打破的闭环：**
+但是为了保证timer正常释放，在dealloc里面要写这样的代码
 
-`self (Controller) ----strong----> timer ----strong----> self (Controller)`
+```objc
+- (void)dealloc {
+    [self.timer invalidate];
+    self.timer = nil;
+}
+```
 
-### 三、内存泄漏的后果
-
-当用户离开这个 `MyViewController` 界面时（例如，通过 `navigationController` pop 返回上一级），会发生什么？
-
-1.  `UINavigationController` 会释放它对 `MyViewController` 实例的强引用。
-2.  此时，我们期望 `MyViewController` 的引用计数会变为 0，从而触发 `dealloc` 方法被调用。
-3.  **但是，由于 `timer` 还强引用着 `MyViewController`，所以 `MyViewController` 的引用计数实际上是 1，而不是 0！**
-4.  因此，`MyViewController` 的 `dealloc` 方法**永远不会被调用**。
-5.  既然 `dealloc` 不被调用，那么 `[self.timer invalidate];` 这行关键代码也**永远不会被执行**。
-6.  因为 `timer` 没有被 `invalidate`（停止），它会继续持有对 `MyViewController` 的强引用，并且会永远在后台触发 `updateCountdown` 方法。
-
-**最终导致：**
-
-*   `MyViewController` 对象和 `NSTimer` 对象都无法被释放，造成了**内存泄漏**。
-
----
-
-### 四、解决方案
+### 四解决方案
 
 ### 核心思想
 
@@ -775,8 +761,6 @@ $$\text{Controller} \xrightarrow{\text{强引用}} \text{NSTimer} \xrightarrow{\
 
 1. **弱引用**真正的目标对象（`target`）。
 2. 能够接收 `NSTimer` 发出的消息（`selector`），并将消息**转发**给被弱引用的目标对象。
-
-
 
 #### 1. 定义代理类（例如：`MyWeakProxy`）
 
@@ -2571,28 +2555,871 @@ for (int i = 0; i < 10000; i++) {
 
 ✅ 每次循环结束立即释放上次创建的自动释放对象，降低峰值内存占用。
 
-✅ 4. **自己手动管理 RunLoop 或线程**
+## ***在哪些场景要用到kvo
 
-如果你写了自定义的线程循环（比如网络下载线程、日志线程）：
+## ***除了循环引用，还有什么内存泄漏的情况
+
+### 🚫 一、定时器 / GCD / DisplayLink 等导致的泄漏
+
+1️⃣ NSTimer / CADisplayLink 强引用 target
 
 ```objc
-- (void)startWorkerThread {
-    while (!self.stopped) {
-        @autoreleasepool {
-            // 执行任务
-            [self doWork];
-        }
+self.timer = [NSTimer scheduledTimerWithTimeInterval:1.0
+                                              target:self
+                                            selector:@selector(doSomething)
+                                            userInfo:nil
+                                             repeats:YES];
+```
+
+👉 `NSTimer` 会强引用 `target`，
+ 如果 `target`（通常是 self）也持有 timer，就会造成 **循环引用**。
+
+**解决方式：**
+
+- 使用 `weak` 包装 target，比如通过中间代理类；
+- 或使用 `block` 定时器（`scheduledTimerWithTimeInterval:repeats:block:`）。
+
+### ⚙️ 二、block 捕获 self 不当
+
+```objc
+self.block = ^{
+    [self doSomething]; // 捕获 self 强引用
+};
+```
+
+👉 如果 block 被 self 持有（如属性），形成 retain cycle。
+
+**解决方式：**
+
+```objc
+__weak typeof(self) weakSelf = self;
+self.block = ^{
+    [weakSelf doSomething];
+};
+```
+
+------
+
+### 🧱 三、Delegate 没设为 weak
+
+```objc
+@property (nonatomic, strong) id<SomeDelegate> delegate;
+```
+
+👉 Controller A 创建 B，B.delegate = A，如果 delegate 是 strong，会循环引用。
+
+**正确写法：**
+
+```objc
+@property (nonatomic, weak) id<SomeDelegate> delegate;
+```
+
+------
+
+### 🔄 四、NSNotificationCenter 没有移除观察者（iOS 9 之前）
+
+```objc
+[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(...)];
+```
+
+👉 在 iOS 9 之前系统不会自动移除 observer，导致 `self` 不会释放。
+
+**解决方式：**
+
+```objc
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+```
+
+（iOS 9+ 会自动移除，但最好还是显式移除）
+
+### 🧠 七、单例 / 静态变量未清理
+
+单例或静态容器中保存对象，若生命周期与 app 一样长，就相当于泄漏。
+
+```objc
+static NSMutableArray *cache;
+[cache addObject:self]; // 永不释放
+```
+
+## ***有哪些场景 会让你去使用 runloop
+
+### ⚙️ 二、开发中你会主动用 RunLoop 的典型场景
+
+以下这些是面试中最希望你能答到、并且实际开发中确实会“手动操作 RunLoop”的场景 👇
+
+------
+
+### 1️⃣ **保持子线程常驻（线程保活）**
+
+默认情况下，子线程执行完任务就会退出。
+ 如果你需要在子线程中持续处理任务（比如下载、音频录制、Socket长连），
+ 就需要手动创建一个 RunLoop，让它“活着”：
+
+```objc
+- (void)startBackgroundThread {
+    NSThread *thread = [[NSThread alloc] initWithBlock:^{
+        // 给子线程创建 RunLoop
+        NSRunLoop *runLoop = [NSRunLoop currentRunLoop];
+        [runLoop addPort:[NSMachPort port] forMode:NSDefaultRunLoopMode]; // 保证有事件源
+        [runLoop run]; // 开始循环，线程不会退出
+    }];
+    [thread start];
+}
+```
+
+> ✅ 常见于：
+>
+> - 音频播放录制（AudioQueue、AVAudioEngine）
+> - IM 聊天（Socket长连接）
+> - 后台任务线程
+
+------
+
+### 2️⃣ **优化滑动性能（如图片懒加载 / 滑动不卡顿）**
+
+在滚动时，RunLoop 会切换 Mode 到 `UITrackingRunLoopMode`。
+ 你可以把耗时任务放到 `NSDefaultRunLoopMode` 下，避免滚动时执行。
+
+```objc
+[[NSRunLoop currentRunLoop] addTimer:timer forMode:NSDefaultRunLoopMode];
+// 或
+[[NSRunLoop currentRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
+```
+
+> ✅ 常见于：
+>
+> - 图片异步加载（避免卡顿）
+> - 列表滑动时暂停某些更新操作
+
+------
+
+### 3️⃣ **手动控制任务调度时机**
+
+RunLoop 提供了 `performSelector:target:arguments:order:modes:`
+ 可以控制任务在哪个 mode 下执行，用于延迟操作、特定场景触发等。
+
+## ***GCD
+
+**第二部分：核心概念与工作原理 (How it Works)**
+
+要理解GCD，必须先理解几个核心概念：
+
+1.  **任务 (Task)**：指的是我们希望执行的操作。在Objective-C和Swift中，这通常是一个**Block**或者一个函数。任务分为两种执行方式：
+    *   **同步 (Sync)**：使用 `dispatch_sync` 提交。这个函数会阻塞当前线程，直到提交的任务在指定队列上执行完毕后，才会返回。
+    *   **异步 (Async)**：使用 `dispatch_async` 提交。这个函数会立即返回，不会阻塞当前线程，任务会在后台的某个时间点被执行。这是实现并发和UI不卡顿的关键。
+
+2.  **队列 (Dispatch Queue)**：这是一个遵循**FIFO（先进先出）**原则的数据结构，用于存放待执行的任务。GCD中的队列主要分为两种类型：
+    *   **串行队列 (Serial Queue)**：同一时间内，队列中只有一个任务在执行。任务会一个接一个地、按顺序执行。虽然只有一个任务在跑，但执行任务的线程可能是变化的（由GCD决定）。主队列就是一个特殊的全局串行队列。
+    *   **并发队列 (Concurrent Queue)**：同一时间内，队列中可以有多个任务并发执行（只要系统有足够的计算资源）。任务的启动顺序仍然是FIFO，但它们的完成顺序是不可预测的。
+
+3.  **系统提供的队列**：
+    *   **主队列 (Main Queue)**：这是一个全局可用的**串行队列**，所有提交到主队列的任务都会在应用程序的**主线程**上执行。因此，所有UI更新相关的操作都必须放在主队列中。可以通过 `DispatchQueue.main` (Swift) 或 `dispatch_get_main_queue()` (OC) 获取。
+    *   **全局并发队列 (Global Concurrent Queues)**：这是系统为我们提供的并发队列，方便我们执行后台耗时操作。它们根据**服务质量（QoS）**进行了优先级划分，以告诉系统任务的重要程度，从而合理分配CPU、I/O等资源。常见的QoS级别有：
+        *   `userInteractive`: 用户交互相关，需要立即完成，优先级最高。
+        *   `userInitiated`: 用户主动发起的任务，需要快速响应。
+        *   `default`: 默认级别。
+        *   `utility`: 需要一些时间，用户不急切等待结果。
+        *   `background`: 后台维护性任务，对时间不敏感，优先级最低。
+            可以通过 `DispatchQueue.global(qos:)` 或 `dispatch_get_global_queue()` 获取。
+
+### Dispatch Queues
+
+#### 1. 核心概念：任务、同步与异步、串行与并发
+
+在使用 Dispatch Queues 之前，需要先理解几个核心概念：
+
+*   **任务 (Task):** 你希望执行的代码块。在 Objective-C 中，这通常是一个 Block。
+*   **同步 (Synchronous) vs. 异步 (Asynchronous):**
+    *   **同步 (`dispatch_sync`):** 会阻塞当前线程，直到添加到队列的任务执行完毕。 调用 `dispatch_sync` 并将目标设置为当前队列会导致死锁。
+    *   **异步 (`dispatch_async`):** 不会阻塞当前线程，会立即返回。任务会在稍后的某个时间点在另一个线程上执行。
+*   **串行 (Serial) vs. 并发 (Concurrent):**
+    *   **串行队列 (Serial Queue):** 任务按照先进先出 (FIFO) 的顺序，一次只执行一个。 这对于保护共享资源或需要按特定顺序执行任务的场景非常有用。
+    *   **并发队列 (Concurrent Queue):** 同样遵循 FIFO 的顺序开始执行任务，但可以同时执行多个任务，无需等待前一个任务完成。 这使得并发队列非常适合执行可以独立且同时进行的任务。
+
+#### 2. Dispatch Queues 的类型
+
+GCD 提供了几种不同类型的队列：
+
+* **主队列 (Main Dispatch Queue):**
+
+  *   一个全局可用的串行队列。
+  *   所有提交到主队列的任务都在应用程序的主线程上执行。
+  *   主要用于更新 UI，因为所有 UI 操作都必须在主线程上进行。
+  *   通过 `dispatch_get_main_queue()` 获取。
+
+* **全局并发队列 (Global Concurrent Queues):**
+
+  *   由系统提供的一组并发队列。
+  *   这些队列具有不同的服务质量 (Quality of Service, QoS) 或优先级，以告知系统任务的重要性。
+  *   通过 `dispatch_get_global_queue()` 获取，可以指定优先级。
+
+* **自定义队列 (Custom Queues):**
+
+  * 使用 `dispatch_queue_create()` 函数创建你自己的串行或并发队列。
+
+  * 创建时需要提供一个唯一的标签（通常是反向 DNS 命名），这对于调试非常有帮助。
+
+  * **创建串行队列:**
+
+    ```objectivec
+    dispatch_queue_t mySerialQueue = dispatch_queue_create("com.example.mySerialQueue", DISPATCH_QUEUE_SERIAL);
+    ```
+
+  * **创建并发队列:**
+
+    ```objectivec
+    dispatch_queue_t myConcurrentQueue = dispatch_queue_create("com.example.myConcurrentQueue", DISPATCH_QUEUE_CONCURRENT);
+    ```
+
+#### 3. 如何使用 Dispatch Queues
+
+将任务提交到队列的基本语法如下：
+
+* **异步提交任务到全局队列:**
+
+  ```objectivec
+  // 获取一个全局并发队列
+  dispatch_queue_t globalQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+  
+  // 异步执行任务
+  dispatch_async(globalQueue, ^{
+      // 在后台执行耗时操作，例如网络请求
+      NSLog(@"后台任务正在执行...");
+  
+      // 操作完成后，回到主线程更新UI
+      dispatch_async(dispatch_get_main_queue(), ^{
+          NSLog(@"在主线程更新UI");
+          // self.myLabel.text = @"更新完成";
+      });
+  });
+  ```
+
+* **同步提交任务到自定义串行队列:**
+
+  ```objectivec
+  dispatch_queue_t mySerialQueue = dispatch_queue_create("com.example.mySerialQueue", NULL);
+  
+  dispatch_sync(mySerialQueue, ^{
+      // 这个代码块会阻塞当前线程，直到执行完毕
+      NSLog(@"同步任务执行");
+  });
+  ```
+
+### **Dispatch Group**
+
+**🧠 二、基本用法**
+
+**✅ 示例 1：等待多个异步任务完成**
+
+```objc
+dispatch_group_t group = dispatch_group_create();
+dispatch_queue_t queue = dispatch_get_global_queue(0, 0);
+
+dispatch_group_async(group, queue, ^{
+    NSLog(@"任务 1 开始");
+    sleep(2);
+    NSLog(@"任务 1 结束");
+});
+
+dispatch_group_async(group, queue, ^{
+    NSLog(@"任务 2 开始");
+    sleep(1);
+    NSLog(@"任务 2 结束");
+});
+
+dispatch_group_async(group, queue, ^{
+    NSLog(@"任务 3 开始");
+    sleep(3);
+    NSLog(@"任务 3 结束");
+});
+
+// 所有任务完成后回调
+dispatch_group_notify(group, dispatch_get_main_queue(), ^{
+    NSLog(@"🎉 所有任务执行完毕！");
+});
+```
+
+输出顺序（并发执行）：
+
+```
+任务1开始
+任务2开始
+任务3开始
+任务2结束
+任务1结束
+任务3结束
+🎉 所有任务执行完毕！
+```
+
+------
+
+**🧩 三、等待方式的区别**
+
+**✅ `dispatch_group_notify`（异步通知）**
+
+上面例子用的就是它。
+ 👉 任务都完成后，异步回调一个 block，不会阻塞当前线程。
+
+------
+
+**✅ `dispatch_group_wait`（同步等待）**
+
+```objc
+dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
+NSLog(@"所有任务都完成后继续执行");
+```
+
+这会**阻塞当前线程**直到任务组完成。
+ 适合在后台线程中使用（⚠️ 不要放在主线程，会卡 UI）。
+
+------
+
+**⚙️ 四、如果任务不是通过 `dispatch_group_async` 提交怎么办？**
+
+可以用 **enter/leave 手动管理**。
+
+**✅ 示例 2：配合异步回调使用**
+
+```objc
+dispatch_group_t group = dispatch_group_create();
+
+dispatch_group_enter(group);
+[self requestDataWithCompletion:^{
+    NSLog(@"网络请求1结束");
+    dispatch_group_leave(group);
+}];
+
+dispatch_group_enter(group);
+[self requestDataWithCompletion:^{
+    NSLog(@"网络请求2结束");
+    dispatch_group_leave(group);
+}];
+
+dispatch_group_notify(group, dispatch_get_main_queue(), ^{
+    NSLog(@"🎉 所有网络请求完成！");
+});
+```
+
+> 🔹 每次调用 `enter`，计数 +1
+>  🔹 每次调用 `leave`，计数 -1
+>  🔹 当计数为 0 时，触发 `notify`
+
+这种方式非常适合 **网络请求、异步加载图片等多任务并发场景**。
+
+------
+
+**🧪 五、使用场景总结**
+
+| 场景                                     | 用法                              | 优点                           |
+| ---------------------------------------- | --------------------------------- | ------------------------------ |
+| 多个异步任务并发执行，最后汇总结果       | `dispatch_group_async` + `notify` | 高效并行、结构清晰             |
+| 网络请求并发后统一回调                   | `enter` / `leave`                 | 可管理非 GCD 异步任务          |
+| 异步任务全部完成后做后续操作（如刷新UI） | `notify` 回调在主线程执行         | 控制执行时机                   |
+| 执行完所有任务再继续同步流程             | `dispatch_group_wait`             | 同步等待，逻辑简单（注意阻塞） |
+
+------
+
+**⚠️ 常见陷阱**
+
+1. **`enter` 和 `leave` 必须成对出现**
+    否则会导致 `group` 永远不释放（内存泄漏）或崩溃。
+2. **不要在主线程使用 `dispatch_group_wait`**
+    会阻塞主线程导致卡死。
+3. **内部任务必须异步执行**
+    否则失去了并发优势。
+
+### Dispatch Barrier
+
+好的，我们来详细深入地探讨 Objective-C 中的 Dispatch Barriers（调度栅栏）。
+
+#### 1. 什么是 Dispatch Barrier？
+
+Dispatch Barrier（调度栅栏）是 Grand Central Dispatch (GCD) 提供的一种强大的同步机制。它的核心功能是在一个**自定义的并发队列 (Custom Concurrent Queue)** 中创建一个“瓶颈”或“同步点”。
+
+想象一下一个多车道的收费站：
+
+*   **普通任务 (`dispatch_async`)**：就像多条车道上的汽车，可以并行通过收费站。
+*   **栅栏任务 (`dispatch_barrier_async`)**：就像一个需要临时关闭所有车道进行维护的指令。在维护期间（即栅栏任务执行期间），任何新的汽车（新任务）都不能进入收费站，而已经在收费站内的汽车（已开始执行的任务）会继续通过。维护完成后，收费站重新开放，汽车又可以并行通过了。
+
+具体来说，当您将一个栅栏任务提交到一个并发队列时，会发生以下情况：
+
+1.  队列会等待所有在栅栏任务**之前**提交的普通任务执行完毕。
+2.  在等待期间，队列不会开始执行任何在栅栏任务**之后**提交的新任务。
+3.  一旦所有先前的任务都完成了，队列就会开始**单独执行**这个栅栏任务。在栅栏任务执行期间，队列中不会有其他任何任务在执行。
+4.  当栅栏任务执行完毕后，队列会恢复其正常的并发行为，继续并行执行在栅栏任务之后提交的任务。
+
+这个特性使得 Dispatch Barrier 成为实现**“读者-写者”模式 (Readers-Writer Pattern)** 的完美工具。
+
+#### 2. 为什么需要 Dispatch Barrier？—— 经典的“读者-写者”问题
+
+在并发编程中，一个常见的问题是如何安全地访问一个可变的数据集合（例如 `NSMutableArray` 或 `NSMutableDictionary`）。
+
+*   **读取 (Reading)** 操作通常是线程安全的，只要在读取期间没有写入操作即可。多个线程可以同时读取数据而不会产生问题。
+*   **写入 (Writing)** 操作（包括添加、修改、删除）则不是线程安全的。如果一个线程正在写入，而另一个线程试图读取或写入，就可能导致数据损坏或应用崩溃。
+
+**解决方案：**
+
+*   允许**并发读取**，因为这不会引起冲突。
+*   确保**写入是独占的**，即当一个线程正在写入时，其他任何线程（无论是读还是写）都必须等待。
+
+Dispatch Barrier 完美地契合了这一模型。我们可以将所有的读操作作为普通任务提交，而将所有的写操作作为栅栏任务提交。
+
+#### 3. Barrier 的核心函数
+
+GCD 提供了两个栅栏函数，它们都将一个 block 作为栅栏任务提交到队列中。
+
+#### `dispatch_barrier_async`
+
+这是最常用的栅栏函数。它**异步**地提交栅栏任务，并**立即返回**，不会阻塞当前线程。
+
+```objectivec
+void dispatch_barrier_async(dispatch_queue_t queue, dispatch_block_t barrier_block);
+```
+
+*   **`queue`**: 目标并发队列。
+*   **`barrier_block`**: 要作为栅栏执行的代码块。
+
+这是实现线程安全读写的首选，因为它不会因为等待写操作完成而阻塞调用线程（例如主线程），从而保持了应用的响应性。
+
+#### `dispatch_barrier_sync`
+
+这个函数**同步**地提交栅栏任务。它会**阻塞当前线程**，直到栅栏任务执行完毕并返回。
+
+```objectivec
+void dispatch_barrier_sync(dispatch_queue_t queue, dispatch_block_t barrier_block);
+```
+
+它的行为与 `dispatch_barrier_async` 类似，都保证了栅栏任务的独占执行。关键区别在于 `dispatch_barrier_sync` 会等待栅栏任务完成。这在某些场景下可能有用，例如，您需要立即知道写操作的结果才能继续执行后续代码，但它会牺牲调用线程的并发性。
+
+### `dispatch_semaphore_t`
+
+好的，我们来非常详细地介绍一下 `dispatch_semaphore_t`（信号量）。它是 Grand Central Dispatch (GCD) 中一个极其强大且高效的同步工具。
+
+理解信号量的最好方式是通过一个生动的比喻：**停车场车位管理系统**。
+
+---
+
+**一、核心概念：什么是信号量？**
+
+`dispatch_semaphore_t` 本质上是一个**计数器**，用来控制对有限资源的访问。它遵循一个简单的原则：
+
+*   当计数值 **大于 0** 时，允许访问资源。
+*   当计数值 **等于 0** 时，任何试图访问资源的新请求都必须等待。
+
+**停车场比喻：**
+
+*   **信号量**：就是停车场入口处的电子显示牌。
+*   **信号量的计数值**：就是显示牌上显示的“**剩余车位数**”。
+*   **线程**：就是一辆辆想要进入停车场的汽车。
+
+---
+
+**二、三大核心函数**
+
+信号量的所有操作都围绕三个核心函数展开：
+
+#### 1. `dispatch_semaphore_create(long value)`
+
+*   **作用**：创建一个新的信号量，并设置其**初始计数值**。
+*   **参数 `value`**：初始计数值。这个值必须大于或等于0。
+
+```objc
+// 创建一个初始计数值为 5 的信号量
+// 相当于停车场有 5 个空车位
+dispatch_semaphore_t semaphore = dispatch_semaphore_create(5);
+```
+
+#### 2. `dispatch_semaphore_wait(semaphore, timeout)`
+
+*   **作用**：尝试“获取”一个资源，可以理解为“请求进入”。这个函数会检查信号量的计数值。
+    *   **如果计数值 > 0**：函数会立刻将计数值减 1，然后立即返回，表示“获取成功”。
+    *   **如果计数值 == 0**：函数会**阻塞**当前线程，让线程进入休眠状态，直到计数值再次大于0，或者等待超时。
+*   **参数 `semaphore`**：要操作的信号量。
+*   **参数 `timeout`**：超时时间。通常使用：
+    *   `DISPATCH_TIME_NOW`：不等待，如果计数值为0，立刻返回。
+    *   `DISPATCH_TIME_FOREVER`：永远等待，直到计数值大于0。
+
+#### 3. `dispatch_semaphore_signal(semaphore)`
+
+*   **作用**：释放一个资源，可以理解为“宣布离开”。这个函数会将信号量的计数值加 1。
+*   **如果之前有线程因为计数值为0而被阻塞**，`signal` 会唤醒其中一个正在等待的线程。
+
+---
+
+**三、三大经典使用场景**
+
+信号量的不同用法取决于你为它设定的初始值。
+
+#### 场景一：用作互斥锁（保证线程安全）
+
+这是最常见的用法之一，可以实现一个性能非常高的锁。
+
+* **如何实现**：创建一个初始计数值为 **1** 的信号量。
+
+* **原理**：
+
+  1.  第一个线程调用 `wait`，计数值从 1 变为 0，线程继续执行。
+  2.  此时若有第二个线程调用 `wait`，由于计数值为 0，第二个线程将被阻塞。
+  3.  直到第一个线程执行完毕，调用 `signal`，计数值从 0 恢复为 1。
+  4.  第二个线程被唤醒，`wait` 函数返回，计数值再次变为 0，第二个线程开始执行。
+
+* **比喻**：一个只有一个车位的 **VIP 停车场**。一次只能进一辆车。
+
+* **代码示例**：
+
+  ```objc
+  // 创建一个初始值为 1 的信号量，作为锁
+  dispatch_semaphore_t lockSemaphore = dispatch_semaphore_create(1);
+  NSMutableArray *sharedArray = [NSMutableArray array];
+  
+  // 在并发队列中模拟多线程写操作
+  for (int i = 0; i < 100; i++) {
+      dispatch_async(dispatch_get_global_queue(0, 0), ^{
+          // 等待信号量，相当于加锁
+          // 如果计数值>0，则-1并继续；否则等待
+          dispatch_semaphore_wait(lockSemaphore, DISPATCH_TIME_FOREVER);
+          
+          // --- 临界区代码开始 ---
+          [sharedArray addObject:@(i)];
+          NSLog(@"Added %d, Current Thread: %@", i, [NSThread currentThread]);
+          // --- 临界区代码结束 ---
+          
+          // 释放信号量，相当于解锁
+          // 计数值+1，若有等待的线程则唤醒一个
+          dispatch_semaphore_signal(lockSemaphore);
+      });
+  }
+  ```
+
+#### 场景二：控制最大并发数
+
+这是信号量非常强大的一个功能，可以精确控制同时执行任务的数量。
+
+* **如何实现**：创建一个初始计数值为 **N** 的信号量，N 就是你想要的最大并发数。
+
+* **原理**：循环异步派发大量任务到一个并发队列中，但在每个任务的开头调用 `wait`。这样，只有前 N 个任务可以成功通过 `wait`（将计数值从 N 减到 0），后续的任务都会被阻塞，直到有一个任务执行完毕并调用 `signal`，释放出一个“名额”。
+
+* **比喻**：一个有 **N 个车位**的公共停车场。最多只能同时停 N 辆车。
+
+* **代码示例**：
+
+  ```objc
+  // 创建一个初始值为 3 的信号量，表示最多允许 3 个任务并发执行
+  dispatch_semaphore_t concurrencySemaphore = dispatch_semaphore_create(3);
+  dispatch_queue_t concurrentQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+  
+  // 模拟派发 10 个耗时任务
+  for (int i = 0; i < 10; i++) {
+      dispatch_async(concurrentQueue, ^{
+          // 在任务开始时，请求一个“并发名额”
+          // 如果并发数已满（计数值为0），则在此等待
+          dispatch_semaphore_wait(concurrencySemaphore, DISPATCH_TIME_FOREVER);
+          
+          NSLog(@"Task %d is starting. Thread: %@", i, [NSThread currentThread]);
+          sleep(2); // 模拟耗时操作
+          NSLog(@"Task %d is finished.", i);
+          
+          // 任务结束，释放“并发名额”
+          dispatch_semaphore_signal(concurrencySemaphore);
+      });
+  }
+  ```
+
+  你会发现，日志总是3个任务一组地开始和结束。
+
+## ***什么是动态库，什么是静态库
+
+**🧩 一、什么是库（Library）**
+
+一个「库」其实就是一堆**已经编译好的可复用代码**，别人写好后你可以直接拿来用，不用看源代码。
+
+常见形式：
+
+- `.a`（静态库）
+- `.dylib`（iOS / macOS 的动态库）
+- `.so`（Android / Linux 的动态库）
+- `.framework`（苹果封装格式，里面其实可能是 `.a` 或 `.dylib`）
+
+------
+
+**⚙️ 二、静态库（Static Library）**
+
+📦 定义
+
+静态库在**编译时（compile time）**就被**直接拷贝进可执行文件（Mach-O）**中。
+
+常见扩展名：
+
+```
+libXXX.a
+XXX.framework（内部静态库）
+```
+
+**🧠 工作原理**
+
+1. 你在项目中引入 `.a`；
+2. 编译器在**链接阶段（Linking）**把库中用到的目标文件 `.o` 合并进最终的二进制；
+3. 应用启动时，这些代码已经存在于你自己的二进制中，不再需要额外加载。
+
+**📊 特点总结**
+
+| 特性     | 说明                               |
+| -------- | ---------------------------------- |
+| 加载时机 | **编译链接时**合并到主程序中       |
+| 文件体积 | 稍大（因为所有库代码都被复制进去） |
+| 运行效率 | 稍快（不需要运行时动态加载）       |
+| 更新方式 | 必须重新打包整个应用               |
+| 示例     | `.a`、`静态.framework`             |
+
+**✅ 适用场景**
+
+- SDK 不需要频繁更新；
+- 性能要求高；
+- 不希望暴露源码。
+
+------
+
+**⚙️ 三、动态库**
+
+📦 定义
+
+动态库在**运行时（runtime）**才被系统动态加载到内存中。
+
+常见扩展名：
+
+```
+libXXX.dylib
+XXX.framework（内部动态库）
+```
+
+**🧠 工作原理**
+
+1. 编译阶段，程序**只保存一个符号表引用**（告诉系统“我依赖哪个库”）；
+2. 应用启动时，系统通过 `dyld（动态链接器）` 把 `.dylib` 加载进内存；
+3. 多个应用可以**共享同一份动态库副本**，节省内存。
+
+**📊 特点总结**
+
+| 特性     | 说明                                |
+| -------- | ----------------------------------- |
+| 加载时机 | **运行时**由系统加载                |
+| 文件体积 | 较小（只保存符号引用）              |
+| 运行效率 | 稍慢（要加载和符号绑定）            |
+| 更新方式 | 可独立更新（无需重编主程序）        |
+| 示例     | `.dylib`、系统的 UIKit.framework 等 |
+
+**✅ 适用场景**
+
+- 系统框架（如 UIKit、Foundation）
+- 插件式架构
+- 想独立更新的模块（如热修复框架）
+
+------
+
+**🧱 四、举个直观例子**
+
+假设你写了一个「图片处理库」。
+
+**使用静态库：**
+
+- 编译期直接打包到 App 里；
+- App 体积增加；
+- 每次改库代码 → 重新编译整个 App；
+- 运行时直接执行，启动速度快。
+
+**使用动态库：**
+
+- App 里只有一个“引用”；
+- 系统运行时动态加载 `.dylib`；
+- 可以替换动态库文件，而不改 App；
+- 但启动时要多一步“加载 + 符号绑定”，稍慢。
+
+------
+
+**⚖️ 六、对比总结表**
+
+| 对比项         | 静态库（.a）             | 动态库（.dylib / .framework） |
+| -------------- | ------------------------ | ----------------------------- |
+| 加载时机       | 编译时                   | 运行时                        |
+| 链接方式       | 静态链接                 | 动态链接                      |
+| 是否可独立更新 | ❌ 否                     | ✅ 是                          |
+| 内存占用       | 各自拷贝一份             | 可多个进程共享                |
+| 启动速度       | 快                       | 稍慢（需加载）                |
+| 体积           | 大                       | 小                            |
+| 使用场景       | 第三方 SDK、性能敏感模块 | 系统框架、插件化架构          |
+
+## ***动态库和静态库有什么区别
+
+* 静态库在编译的时候已经编译到了二进制文件中
+* 动态库则是在runtime的时候加载到内存中
+* 动态库的好处就是，更新动态库不需要重新编译，缺点是会影响冷启动速度
+
+## ***ios冷启动优化
+
+* 二进制重排：利用instrument对冷启动触达的符号进行采样，然后用脚本把它写到orderfile里面（它相当于可以制定二进制的编译顺序）。本质上是可以减少页错误
+* 减少无用类
+* 减少动态库，因为动态库需要冷启动的时候才加载它的mach-o，加载过程包括解析依赖，检查签名等；然后动态库需要的rebase和bind；动态库需要冷启动的时候注册到runtime
+
+## ***app启动流程
+
+* 执行mach-o
+* 加载动态库
+* rebase和bind
+* runtime初始化类的元数据，就是把类的结构等元数据初始化并且注册到runtime
+* 执行所有的load方法
+* 执行main函数
+
+------
+
+**🧭 一、总体流程概览（从点图标到首页出现）**
+
+**整体上可以分为 5 大阶段：**
+
+| 阶段                   | 负责模块                         | 关键事件                              |
+| ---------------------- | -------------------------------- | ------------------------------------- |
+| ① 加载可执行文件       | `dyld` 动态链接器                | 加载 Mach-O、链接动态库（含 runtime） |
+| ② 初始化 Runtime 环境  | `libobjc.A.dylib`                | 注册类、方法、分类，调用 `+load`      |
+| ③ 初始化系统 Framework | UIKit / Foundation               | 初始化系统依赖，如 UI 框架            |
+| ④ 执行用户代码入口     | `main()` → `UIApplicationMain()` | 启动 App 生命周期管理                 |
+| ⑤ UI 初始化阶段        | `AppDelegate` / `SceneDelegate`  | 加载根控制器、绘制界面                |
+
+------
+
+**🧩 二、详细阶段拆解**
+
+### **① 用户点击 App 图标 → dyld 启动**
+
+负责者：`dyld`（Dynamic Link Editor）
+
+- 系统启动你的可执行文件（Mach-O 文件）
+- dyld 负责加载所有依赖的动态库，比如：
+  - `libobjc.A.dylib`（Objective-C runtime）
+  - `UIKit.framework`
+  - `Foundation.framework`
+  - 以及你自己依赖的 .framework/.dylib
+- dyld 解析符号表，进行动态链接绑定（symbol binding）
+- 完成重定位（rebasing）与符号绑定（binding）
+
+> ⚡ 冷启动耗时的核心就在 dyld 阶段，比如加载动态库、符号解析、rebase/bind 等操作。
+
+------
+
+### **② 加载并初始化 Runtime（libobjc）**
+
+负责者：`libobjc.A.dylib`
+
+- runtime 解析可执行文件中的类（class）、方法（method）、协议（protocol）、分类（category）
+- 将所有类注册到 class map 中
+- 调用每个类/分类的 `+load` 方法（在任何实例创建前）
+
+> runtime 初始化在 dyld 阶段完成后立即进行。
+>  所以 **runtime 本身是一个动态库，被 dyld 加载后自动初始化。**
+
+------
+
+### **④ 执行 `main()` 函数**
+
+这是开发者能看到的第一个入口。
+
+```objc
+int main(int argc, char * argv[]) {
+    @autoreleasepool {
+        return UIApplicationMain(argc, argv, nil, NSStringFromClass([AppDelegate class]));
     }
 }
 ```
 
-✅ 每次循环清空 autoreleasepool，防止内存泄漏。
+作用：
 
-## ***动态库和静态库有什么区别
+- 创建自动释放池
+- 调用 `UIApplicationMain()` 启动主事件循环（RunLoop）
+- 创建 `UIApplication` 实例
+- 设置 delegate
+- 加载应用配置文件（Info.plist）
 
-## ***ios冷启动优化
+------
 
+### **⑤ UIApplicationMain 内部流程**
 
+负责者：UIKit 框架
+
+1. 创建 `UIApplication` 对象；
+2. 创建并设置 `AppDelegate`；
+3. 初始化主 RunLoop；
+4. 启动事件循环，监听系统事件；
+5. 调用 `-[UIApplicationDelegate application:didFinishLaunchingWithOptions:]`；
+6. 设置根视图控制器（`UIWindow.rootViewController`）；
+7. 渲染第一帧 UI，屏幕亮起。
+
+------
+
+**⚙️ 三、关键时机点总结**
+
+| 阶段             | 函数 / 方法                     | 说明                         |
+| ---------------- | ------------------------------- | ---------------------------- |
+| 1️⃣ dyld 加载      | `dyld_start`                    | 加载主可执行文件与依赖库     |
+| 2️⃣ runtime 初始化 | `_objc_init`                    | 注册类、加载方法、调用 +load |
+| 3️⃣ main() 调用    | `main()`                        | 开发者入口                   |
+| 4️⃣ App 启动       | `UIApplicationMain`             | 初始化应用环境               |
+| 5️⃣ 首屏渲染       | `didFinishLaunchingWithOptions` | 界面出现前的最后一步         |
+
+------
+
+**🎯 四、冷启动性能优化方向（面试重点）**
+
+| 优化点         | 原理                         | 示例                          |
+| -------------- | ---------------------------- | ----------------------------- |
+| 减少动态库数量 | dyld 加载越少越快            | 合并业务库                    |
+| 延迟加载资源   | 减少启动时 I/O               | 懒加载大图/配置文件           |
+| 优化 +load     | 不在 +load 做逻辑            | 移动到 +initialize 或延迟执行 |
+| 异步初始化     | 并发加载数据                 | 后台线程预热配置              |
+| 预编译符号缓存 | Apple 的 “dyld shared cache” | 系统级优化                    |
+
+------
+
+✅ 五、总结一句话记忆法
+
+> **App 冷启动流程：**
+>
+> 🔹 用户点击图标 → dyld 加载 Mach-O
+>  🔹 runtime 注册类并调用 +load
+>  🔹 进入 main() → UIApplicationMain
+>  🔹 初始化 AppDelegate → 启动 RunLoop
+>  🔹 加载首屏 UI → 屏幕显示
+
+## ***runtime什么时候初始化
+
+runtime 本身（libobjc.A.dylib）在 **App 启动阶段由 dyld 加载**；
+
+之后 runtime 会解析 Mach-O 中的类、分类、协议元数据并注册；
+
+在这个阶段会调用所有类和分类的 `+load` 方法；
+
+因此 runtime 在 **main() 执行之前** 已经初始化完成；
+
+之后才进入正常的消息派发、动态解析等运行期阶段。
+
+## ***比如两个分类都写了同一个方法 哪个生效，为什么依赖编译顺序
+
+## ***mvvm中vc有什么作用
+
+* VC 是管理视图生命周期（如 `viewDidLoad`、`viewWillAppear`、`viewDidDisappear`）的系统入口点。它负责**创建**和**销毁**视图及其子视图。
+* 负责view和viewmodel的数据绑定
+* 转发用户的交互给vm
+
+## ***元类对象
+
+**`MyClass` 实例**的 `isa` $\rightarrow$ **`MyClass` 类对象**。
+
+**`MyClass` 类对象**的 `isa` $\rightarrow$ **`MyClass` 元类**。
+
+**`MyClass` 元类**的 `superclass` $\rightarrow$ **`NSObject` 元类**。
+
+**`NSObject` 元类**的 `superclass` $\rightarrow$ **`NSObject` 类对象**。（
+
+## wwdc有没有关注
 
 ## SDWebImage这个库的详细介绍
 
@@ -4776,205 +5603,6 @@ static MyManager *instance = nil;
 
 ## 子线程中如何管理对象的生命周期
 
-## GCD
-
-### 第二部分：核心概念与工作原理 (How it Works)
-
-要理解GCD，必须先理解几个核心概念：
-
-1.  **任务 (Task)**：指的是我们希望执行的操作。在Objective-C和Swift中，这通常是一个**Block**或者一个函数。任务分为两种执行方式：
-    *   **同步 (Sync)**：使用 `dispatch_sync` 提交。这个函数会阻塞当前线程，直到提交的任务在指定队列上执行完毕后，才会返回。
-    *   **异步 (Async)**：使用 `dispatch_async` 提交。这个函数会立即返回，不会阻塞当前线程，任务会在后台的某个时间点被执行。这是实现并发和UI不卡顿的关键。
-
-2.  **队列 (Dispatch Queue)**：这是一个遵循**FIFO（先进先出）**原则的数据结构，用于存放待执行的任务。GCD中的队列主要分为两种类型：
-    *   **串行队列 (Serial Queue)**：同一时间内，队列中只有一个任务在执行。任务会一个接一个地、按顺序执行。虽然只有一个任务在跑，但执行任务的线程可能是变化的（由GCD决定）。主队列就是一个特殊的全局串行队列。
-    *   **并发队列 (Concurrent Queue)**：同一时间内，队列中可以有多个任务并发执行（只要系统有足够的计算资源）。任务的启动顺序仍然是FIFO，但它们的完成顺序是不可预测的。
-
-3.  **系统提供的队列**：
-    *   **主队列 (Main Queue)**：这是一个全局可用的**串行队列**，所有提交到主队列的任务都会在应用程序的**主线程**上执行。因此，所有UI更新相关的操作都必须放在主队列中。可以通过 `DispatchQueue.main` (Swift) 或 `dispatch_get_main_queue()` (OC) 获取。
-    *   **全局并发队列 (Global Concurrent Queues)**：这是系统为我们提供的并发队列，方便我们执行后台耗时操作。它们根据**服务质量（QoS）**进行了优先级划分，以告诉系统任务的重要程度，从而合理分配CPU、I/O等资源。常见的QoS级别有：
-        *   `userInteractive`: 用户交互相关，需要立即完成，优先级最高。
-        *   `userInitiated`: 用户主动发起的任务，需要快速响应。
-        *   `default`: 默认级别。
-        *   `utility`: 需要一些时间，用户不急切等待结果。
-        *   `background`: 后台维护性任务，对时间不敏感，优先级最低。
-        可以通过 `DispatchQueue.global(qos:)` 或 `dispatch_get_global_queue()` 获取。
-
-### Dispatch Queues
-
-#### 1. 核心概念：任务、同步与异步、串行与并发
-
-在使用 Dispatch Queues 之前，需要先理解几个核心概念：
-
-*   **任务 (Task):** 你希望执行的代码块。在 Objective-C 中，这通常是一个 Block。
-*   **同步 (Synchronous) vs. 异步 (Asynchronous):**
-    *   **同步 (`dispatch_sync`):** 会阻塞当前线程，直到添加到队列的任务执行完毕。 调用 `dispatch_sync` 并将目标设置为当前队列会导致死锁。
-    *   **异步 (`dispatch_async`):** 不会阻塞当前线程，会立即返回。任务会在稍后的某个时间点在另一个线程上执行。
-*   **串行 (Serial) vs. 并发 (Concurrent):**
-    *   **串行队列 (Serial Queue):** 任务按照先进先出 (FIFO) 的顺序，一次只执行一个。 这对于保护共享资源或需要按特定顺序执行任务的场景非常有用。
-    *   **并发队列 (Concurrent Queue):** 同样遵循 FIFO 的顺序开始执行任务，但可以同时执行多个任务，无需等待前一个任务完成。 这使得并发队列非常适合执行可以独立且同时进行的任务。
-
-#### 2. Dispatch Queues 的类型
-
-GCD 提供了几种不同类型的队列：
-
-*   **主队列 (Main Dispatch Queue):**
-    *   一个全局可用的串行队列。
-    *   所有提交到主队列的任务都在应用程序的主线程上执行。
-    *   主要用于更新 UI，因为所有 UI 操作都必须在主线程上进行。
-    *   通过 `dispatch_get_main_queue()` 获取。
-
-*   **全局并发队列 (Global Concurrent Queues):**
-    *   由系统提供的一组并发队列。
-    *   这些队列具有不同的服务质量 (Quality of Service, QoS) 或优先级，以告知系统任务的重要性。
-    *   通过 `dispatch_get_global_queue()` 获取，可以指定优先级。
-
-*   **自定义队列 (Custom Queues):**
-    *   使用 `dispatch_queue_create()` 函数创建你自己的串行或并发队列。
-    *   创建时需要提供一个唯一的标签（通常是反向 DNS 命名），这对于调试非常有帮助。
-    *   **创建串行队列:**
-        ```objectivec
-        dispatch_queue_t mySerialQueue = dispatch_queue_create("com.example.mySerialQueue", DISPATCH_QUEUE_SERIAL);
-        ```
-    *   **创建并发队列:**
-        ```objectivec
-        dispatch_queue_t myConcurrentQueue = dispatch_queue_create("com.example.myConcurrentQueue", DISPATCH_QUEUE_CONCURRENT);
-        ```
-
-#### 3. 如何使用 Dispatch Queues
-
-将任务提交到队列的基本语法如下：
-
-*   **异步提交任务到全局队列:**
-    ```objectivec
-    // 获取一个全局并发队列
-    dispatch_queue_t globalQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
-    
-    // 异步执行任务
-    dispatch_async(globalQueue, ^{
-        // 在后台执行耗时操作，例如网络请求
-        NSLog(@"后台任务正在执行...");
-    
-        // 操作完成后，回到主线程更新UI
-        dispatch_async(dispatch_get_main_queue(), ^{
-            NSLog(@"在主线程更新UI");
-            // self.myLabel.text = @"更新完成";
-        });
-    });
-    ```
-
-*   **同步提交任务到自定义串行队列:**
-    ```objectivec
-    dispatch_queue_t mySerialQueue = dispatch_queue_create("com.example.mySerialQueue", NULL);
-    
-    dispatch_sync(mySerialQueue, ^{
-        // 这个代码块会阻塞当前线程，直到执行完毕
-        NSLog(@"同步任务执行");
-    });
-    ```
-
-### **Dispatch Group**
-
-好的，我们来着重深入地介绍 **GCD 的任务组 (Dispatch Group)**。这是 GCD 中一个极其强大且实用的工具，专门用于解决“**等待多个异步任务全部执行完毕后，再去做某件事**”的场景。
-
-**核心思想：一个智能的“任务计数器”**
-
-你可以把 `DispatchGroup` 想象成一个非常聪明的计数器，它的工作逻辑如下：
-
-1.  **初始化**：创建一个任务组，此时计数器为 0。
-2.  **任务进组 (`enter`)**：每当你要开始一个需要追踪的异步任务时，你手动调用 `enter` 方法。这会使任务组的内部计数器 **加 1**。
-3.  **任务出组 (`leave`)**：当你追踪的那个异步任务执行完毕时（无论是在它的回调 block 中，还是在其他地方），你再手动调用 `leave` 方法。这会使任务组的内部计数器 **减 1**。
-4.  **监听完成 (`notify`)**：你可以预先注册一个“通知任务”。当任务组的计数器从 1 变为 0 时（也就是所有“进组”的任务都已经“出组”了），系统会自动执行你注册的这个通知任务。
-
-这个机制的美妙之处在于，它完全不关心你追踪的任务是什么、在哪个线程上执行、需要多长时间。它只关心 `enter` 和 `leave` 是否平衡。
-
----
-
-**核心 API 详解**
-
-理解任务组，关键是掌握下面这几个 API：
-
-1.  **`dispatch_group_create()`**
-    *   **作用**：创建一个新的、空的 Dispatch Group。
-    *   **返回值**：`dispatch_group_t`，你后续操作所依赖的句柄。
-2.  **`dispatch_group_enter(dispatch_group_t group)`**
-    *   **作用**：手动通知 `group`，一个任务已经加入到组中。
-    *   **调用时机**：在你发起一个需要追踪的异步操作**之前**调用。
-    *   **效果**：`group` 的内部未完成任务数 +1。
-3.  **`dispatch_group_leave(dispatch_group_t group)`**
-    *   **作用**：手动通知 `group`，一个之前加入的任务已经执行完毕。
-    *   **调用时机**：在异步操作完成的回调中调用。
-    *   **效果**：`group` 的内部未完成任务数 -1。
-    *   **重要**：`enter` 和 `leave` **必须严格配对**。多一个 `enter` 会导致 `notify` 永远不执行；多一个 `leave` 会导致程序崩溃。
-4.  **`dispatch_group_notify(dispatch_group_t group, dispatch_queue_t queue, dispatch_block_t block)`**
-    *   **作用**：注册一个回调 Block，当 `group` 里的任务全部完成（计数器归零）时，这个 Block 会被**异步**地提交到你指定的 `queue` 中执行。
-    *   **特性**：**非阻塞**。调用 `dispatch_group_notify` 会立即返回，当前线程会继续执行下面的代码，不会被卡住。这是它最大的优点。
-    *   `queue`: 你希望最终的“收尾任务”在哪个队列上执行。最常见的用法是传入 `dispatch_get_main_queue()`，以便在所有后台任务完成后更新 UI。
-    *   `block`: 所有任务完成后要执行的代码。
-
-### Dispatch Barrier
-
-好的，我们来详细深入地探讨 Objective-C 中的 Dispatch Barriers（调度栅栏）。
-
-#### 1. 什么是 Dispatch Barrier？
-
-Dispatch Barrier（调度栅栏）是 Grand Central Dispatch (GCD) 提供的一种强大的同步机制。它的核心功能是在一个**自定义的并发队列 (Custom Concurrent Queue)** 中创建一个“瓶颈”或“同步点”。
-
-想象一下一个多车道的收费站：
-
-*   **普通任务 (`dispatch_async`)**：就像多条车道上的汽车，可以并行通过收费站。
-*   **栅栏任务 (`dispatch_barrier_async`)**：就像一个需要临时关闭所有车道进行维护的指令。在维护期间（即栅栏任务执行期间），任何新的汽车（新任务）都不能进入收费站，而已经在收费站内的汽车（已开始执行的任务）会继续通过。维护完成后，收费站重新开放，汽车又可以并行通过了。
-
-具体来说，当您将一个栅栏任务提交到一个并发队列时，会发生以下情况：
-
-1.  队列会等待所有在栅栏任务**之前**提交的普通任务执行完毕。
-2.  在等待期间，队列不会开始执行任何在栅栏任务**之后**提交的新任务。
-3.  一旦所有先前的任务都完成了，队列就会开始**单独执行**这个栅栏任务。在栅栏任务执行期间，队列中不会有其他任何任务在执行。
-4.  当栅栏任务执行完毕后，队列会恢复其正常的并发行为，继续并行执行在栅栏任务之后提交的任务。
-
-这个特性使得 Dispatch Barrier 成为实现**“读者-写者”模式 (Readers-Writer Pattern)** 的完美工具。
-
-#### 2. 为什么需要 Dispatch Barrier？—— 经典的“读者-写者”问题
-
-在并发编程中，一个常见的问题是如何安全地访问一个可变的数据集合（例如 `NSMutableArray` 或 `NSMutableDictionary`）。
-
-*   **读取 (Reading)** 操作通常是线程安全的，只要在读取期间没有写入操作即可。多个线程可以同时读取数据而不会产生问题。
-*   **写入 (Writing)** 操作（包括添加、修改、删除）则不是线程安全的。如果一个线程正在写入，而另一个线程试图读取或写入，就可能导致数据损坏或应用崩溃。
-
-**解决方案：**
-
-*   允许**并发读取**，因为这不会引起冲突。
-*   确保**写入是独占的**，即当一个线程正在写入时，其他任何线程（无论是读还是写）都必须等待。
-
-Dispatch Barrier 完美地契合了这一模型。我们可以将所有的读操作作为普通任务提交，而将所有的写操作作为栅栏任务提交。
-
-#### 3. Barrier 的核心函数
-
-GCD 提供了两个栅栏函数，它们都将一个 block 作为栅栏任务提交到队列中。
-
-#### `dispatch_barrier_async`
-
-这是最常用的栅栏函数。它**异步**地提交栅栏任务，并**立即返回**，不会阻塞当前线程。
-
-```objectivec
-void dispatch_barrier_async(dispatch_queue_t queue, dispatch_block_t barrier_block);
-```
-
-*   **`queue`**: 目标并发队列。
-*   **`barrier_block`**: 要作为栅栏执行的代码块。
-
-这是实现线程安全读写的首选，因为它不会因为等待写操作完成而阻塞调用线程（例如主线程），从而保持了应用的响应性。
-
-#### `dispatch_barrier_sync`
-
-这个函数**同步**地提交栅栏任务。它会**阻塞当前线程**，直到栅栏任务执行完毕并返回。
-
-```objectivec
-void dispatch_barrier_sync(dispatch_queue_t queue, dispatch_block_t barrier_block);
-```
-
-它的行为与 `dispatch_barrier_async` 类似，都保证了栅栏任务的独占执行。关键区别在于 `dispatch_barrier_sync` 会等待栅栏任务完成。这在某些场景下可能有用，例如，您需要立即知道写操作的结果才能继续执行后续代码，但它会牺牲调用线程的并发性。
-
 ## NSOperation
 
 ### 1. 什么是 `NSOperation`？
@@ -5147,140 +5775,7 @@ NSBlockOperation *longRunningOp = [NSBlockOperation blockOperationWithBlock:^{
 ```
 **重点:** 调用 `cancel` 只是将 `isCancelled` 属性设置为 `YES`。你必须在自己的代码中主动检查这个属性，并中断任务的执行，才能真正实现取消。
 
-## `dispatch_semaphore_t`
-
-好的，我们来非常详细地介绍一下 `dispatch_semaphore_t`（信号量）。它是 Grand Central Dispatch (GCD) 中一个极其强大且高效的同步工具。
-
-理解信号量的最好方式是通过一个生动的比喻：**停车场车位管理系统**。
-
----
-
-### 一、核心概念：什么是信号量？
-
-`dispatch_semaphore_t` 本质上是一个**计数器**，用来控制对有限资源的访问。它遵循一个简单的原则：
-
-*   当计数值 **大于 0** 时，允许访问资源。
-*   当计数值 **等于 0** 时，任何试图访问资源的新请求都必须等待。
-
-**停车场比喻：**
-
-*   **信号量**：就是停车场入口处的电子显示牌。
-*   **信号量的计数值**：就是显示牌上显示的“**剩余车位数**”。
-*   **线程**：就是一辆辆想要进入停车场的汽车。
-
----
-
-### 二、三大核心函数
-
-信号量的所有操作都围绕三个核心函数展开：
-
-#### 1. `dispatch_semaphore_create(long value)`
-
-*   **作用**：创建一个新的信号量，并设置其**初始计数值**。
-*   **参数 `value`**：初始计数值。这个值必须大于或等于0。
-*   **比喻**：建造一个新停车场，并规定它总共有 `value` 个车位。电子显示牌的初始数字就是 `value`。
-
-```objc
-// 创建一个初始计数值为 5 的信号量
-// 相当于停车场有 5 个空车位
-dispatch_semaphore_t semaphore = dispatch_semaphore_create(5);
-```
-
-#### 2. `dispatch_semaphore_wait(semaphore, timeout)`
-
-*   **作用**：尝试“获取”一个资源，可以理解为“请求进入”。这个函数会检查信号量的计数值。
-    *   **如果计数值 > 0**：函数会立刻将计数值减 1，然后立即返回，表示“获取成功”。
-    *   **如果计数值 == 0**：函数会**阻塞**当前线程，让线程进入休眠状态，直到计数值再次大于0，或者等待超时。
-*   **参数 `semaphore`**：要操作的信号量。
-*   **参数 `timeout`**：超时时间。通常使用：
-    *   `DISPATCH_TIME_NOW`：不等待，如果计数值为0，立刻返回。
-    *   `DISPATCH_TIME_FOREVER`：永远等待，直到计数值大于0。
-*   **比喻**：一辆车开到停车场入口。
-    *   **如果“剩余车位” > 0**：显示牌数字减 1，道闸打开，汽车进入。
-    *   **如果“剩余车位” == 0**：汽车必须在入口外排队等待。司机（线程）在车里睡觉（阻塞）。
-
-#### 3. `dispatch_semaphore_signal(semaphore)`
-
-*   **作用**：释放一个资源，可以理解为“宣布离开”。这个函数会将信号量的计数值加 1。
-*   **如果之前有线程因为计数值为0而被阻塞**，`signal` 会唤醒其中一个正在等待的线程。
-*   **比喻**：一辆车从停车场驶出。
-    *   显示牌上的“剩余车位”数字加 1。
-    *   如果入口外有排队的汽车，停车场管理员会通知排在第一位的汽车，现在可以进入了。
-
----
-
-### 三、三大经典使用场景
-
-信号量的不同用法取决于你为它设定的初始值。
-
-#### 场景一：用作互斥锁（保证线程安全）
-
-这是最常见的用法之一，可以实现一个性能非常高的锁。
-
-*   **如何实现**：创建一个初始计数值为 **1** 的信号量。
-*   **原理**：
-    1.  第一个线程调用 `wait`，计数值从 1 变为 0，线程继续执行。
-    2.  此时若有第二个线程调用 `wait`，由于计数值为 0，第二个线程将被阻塞。
-    3.  直到第一个线程执行完毕，调用 `signal`，计数值从 0 恢复为 1。
-    4.  第二个线程被唤醒，`wait` 函数返回，计数值再次变为 0，第二个线程开始执行。
-*   **比喻**：一个只有一个车位的 **VIP 停车场**。一次只能进一辆车。
-
-*   **代码示例**：
-    ```objc
-    // 创建一个初始值为 1 的信号量，作为锁
-    dispatch_semaphore_t lockSemaphore = dispatch_semaphore_create(1);
-    NSMutableArray *sharedArray = [NSMutableArray array];
-    
-    // 在并发队列中模拟多线程写操作
-    for (int i = 0; i < 100; i++) {
-        dispatch_async(dispatch_get_global_queue(0, 0), ^{
-            // 等待信号量，相当于加锁
-            // 如果计数值>0，则-1并继续；否则等待
-            dispatch_semaphore_wait(lockSemaphore, DISPATCH_TIME_FOREVER);
-            
-            // --- 临界区代码开始 ---
-            [sharedArray addObject:@(i)];
-            NSLog(@"Added %d, Current Thread: %@", i, [NSThread currentThread]);
-            // --- 临界区代码结束 ---
-            
-            // 释放信号量，相当于解锁
-            // 计数值+1，若有等待的线程则唤醒一个
-            dispatch_semaphore_signal(lockSemaphore);
-        });
-    }
-    ```
-
-#### 场景二：控制最大并发数
-
-这是信号量非常强大的一个功能，可以精确控制同时执行任务的数量。
-
-*   **如何实现**：创建一个初始计数值为 **N** 的信号量，N 就是你想要的最大并发数。
-*   **原理**：循环异步派发大量任务到一个并发队列中，但在每个任务的开头调用 `wait`。这样，只有前 N 个任务可以成功通过 `wait`（将计数值从 N 减到 0），后续的任务都会被阻塞，直到有一个任务执行完毕并调用 `signal`，释放出一个“名额”。
-*   **比喻**：一个有 **N 个车位**的公共停车场。最多只能同时停 N 辆车。
-
-*   **代码示例**：
-    ```objc
-    // 创建一个初始值为 3 的信号量，表示最多允许 3 个任务并发执行
-    dispatch_semaphore_t concurrencySemaphore = dispatch_semaphore_create(3);
-    dispatch_queue_t concurrentQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
-    
-    // 模拟派发 10 个耗时任务
-    for (int i = 0; i < 10; i++) {
-        dispatch_async(concurrentQueue, ^{
-            // 在任务开始时，请求一个“并发名额”
-            // 如果并发数已满（计数值为0），则在此等待
-            dispatch_semaphore_wait(concurrencySemaphore, DISPATCH_TIME_FOREVER);
-            
-            NSLog(@"Task %d is starting. Thread: %@", i, [NSThread currentThread]);
-            sleep(2); // 模拟耗时操作
-            NSLog(@"Task %d is finished.", i);
-            
-            // 任务结束，释放“并发名额”
-            dispatch_semaphore_signal(concurrencySemaphore);
-        });
-    }
-    ```
-    你会发现，日志总是3个任务一组地开始和结束。
+*   
 
 ## 引用计数放在内存的哪个地方
 
@@ -8943,3 +9438,13 @@ eventbus就是一个事件总线
 具体实现就是，定义一个事件类继承自`ApplicationEvent `,然后在service注入`ApplicationEventPublisher `处理完业务逻辑之后去发布这个事件，然后用@EventListener注解去定义一个观察者方法去观察某个具体事件类就行
 
 # 设计模式
+
+## 单例模式
+
+## 工厂模式
+
+## 适配器模式
+
+## 代理模式
+
+## 工厂模式
