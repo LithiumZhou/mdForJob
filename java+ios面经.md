@@ -745,14 +745,6 @@ self持有timer，timer持有proxy，proxy弱持有self，在proxy重写`forward
 
 ### 核心思想
 
-传统的 `NSTimer` 循环引用链是：
-
-$$\text{Controller} \xrightarrow{\text{强引用}} \text{NSTimer} \xrightarrow{\text{强引用}} \text{Controller}$$
-
-中间代理对象的解决方案旨在将这个强引用链打断：
-
-$$\text{Controller} \xrightarrow{\text{强引用}} \text{NSTimer} \xrightarrow{\text{强引用}} \text{Proxy} \xrightarrow{\text{弱引用}} \text{Controller}$$
-
 这样，`Proxy` 对象虽然被 `NSTimer` 强引用，但它对 `Controller` 却是弱引用。当 `Controller` 需要被释放时，其引用计数可以归零并释放，而不会被 `Proxy` 锁住。
 
 ### 代理对象的设计与实现
@@ -987,27 +979,6 @@ Mach-O 可执行文件
 程序启动
 ```
 
-`dyld` 主要做以下几件大事：
-
-#### 1. 装载依赖库 (Loading Libraries)
-
-*   **比喻：** 把所有装家具零件的箱子搬进房间。
-*   **技术解释：** 你的 App 不仅仅包含你写的代码，还依赖很多苹果官方的“零件库”（如 `UIKit`, `Foundation`）和第三方的“零件库”（如 `AFNetworking`）。`dyld` 的第一件事就是找到所有这些必需的库（动态库 `.dylib`），然后把它们全部加载到内存里。
-
-#### 2. Rebase 和 Bind (最重要的环节，也是最耗时的)
-
-*   **比喻：** 仔细阅读说明书，把螺丝拧到正确的孔里，把 A 板和 B 板连接起来。
-*   **技术解释：** 由于安全机制 **ASLR** (地址空间布局随机化)，你的 App 每次启动时，它和它依赖的库在内存中的地址都是**随机**的。这就导致代码里写死的地址引用全部失效了。
-    *   **Rebase (内部修正):** `dyld` 需要修正 App **内部**的指针。比如，你自己的一个函数要调用你自己的另一个函数，`dyld` 就要计算出它们今天在内存中的新地址，然后把这个调用关系“接上”。
-    *   **Bind (外部绑定):** `dyld` 需要把你 App 的代码和**外部**库的代码“绑定”在一起。这是我们讨论的**核心**。比如，你的代码里调用了 `NSLog()`，`dyld` 必须去 `Foundation` 库里找到 `NSLog` 函数的真实内存地址，然后把你的调用代码指向这个地址。**这个查找和绑定的过程，就是性能瓶颈所在。**
-
-#### 3. 运行初始化代码 (Run Initializers)
-
-*   **比喻：** 家具组装好后，给里面的电器通上电，让它们自检。
-*   **技术解释：** `dyld` 会执行所有 Objective-C 的 `+load` 方法和 C++ 的静态构造函数。这些代码被要求在 `main` 函数之前必须执行完毕。
-
-当 `dyld` 做完所有这些工作后，它才会调用你熟悉的 `main` 函数，App 的启动流程才进入到你自己可控的部分。
-
 ## ***为什么ios一定要在主线程操作ui
 
 ### 1. UIKit的非线程安全 (Not Thread-Safe)
@@ -1153,8 +1124,6 @@ Mach-O 可执行文件
 *   **`+initialize` 方法**:
     *   `+initialize` 是在类**第一次接收到消息时**被调用的（懒加载）。
     *   如果一个类和它的 `Category` 都实现了 `+initialize`，那么**只有最后一个被编译器链接的 `Category` 的 `+initialize` 方法会生效**，它会“覆盖”掉原始类和其他 `Category` 的实现。这是因为 `+initialize` 本身就是一个普通的方法调用，遵循 `Category` 的方法覆盖规则。
-
-## ***关联对象如何让category添加属性
 
 ## ***oc内存区域
 
@@ -2016,12 +1985,7 @@ KVC 是通过 **Objective-C Runtime** 来实现的动态查找与赋值。
 
 > **KVC 是通过字符串 key 动态访问属性的机制，底层通过方法查找 + Runtime 直接操作 ivar 实现。**
 
-**关联对象使用和原理**
-
-在 **Objective-C（OC）** 中，“关联对象”（**Associated Objects**）是 **Runtime（运行时）** 提供的一种机制，它可以**在不修改类源码的情况下，为已有类动态添加属性或数据**。
- 这在分类（`Category`）中非常常见，因为分类不能直接添加实例变量。
-
-------
+## ***关联对象使用和原理
 
 **🔧 一、关联对象的使用场景**
 
