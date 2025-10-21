@@ -3421,7 +3421,17 @@ runtime 本身（libobjc.A.dylib）在 **App 启动阶段由 dyld 加载**；
 
 ## ***ca信任机制
 
+## ***你了解wkwebview的其他的哪些方面
+
+## ***你使用cursor的时候会使用哪些外部mcp提效 
+
+## Springboot或者oc，他们框架内部用到哪些线程池，或者你自己用到了什么样的线程池
+
+## 哪些请求是http
+
 ## wwdc有没有关注
+
+## 如果抛开https这一套，让你自己去设计一个握手加密体系，尽量减少握手次数如何做到 
 
 ## SDWebImage这个库的详细介绍
 
